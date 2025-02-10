@@ -23,8 +23,8 @@ const (
 	EntityStatementHeaderType = "entity-statement+jwt"
 
 	// https://openid.net/specs/openid-federation-1_0-41.html#name-obtaining-federation-entity
-	EntityConfigurationPath        = "/.well-known/openid-federation"
-	EntityConfigurationContentType = "application/entity-statement+jwt"
+	EntityConfigurationPath    = "/.well-known/openid-federation"
+	EntityStatementContentType = "application/entity-statement+jwt"
 
 	// Federation entity endpoints
 	// https://openid.net/specs/openid-federation-1_0-41.html#section-5.1.1
@@ -115,9 +115,7 @@ func (i *Identifier) UnmarshalJSON(b []byte) error {
 
 // EntityStatement is an OIDF Entity Statement
 // https://openid.net/specs/openid-federation-1_0-41.html#section-3
-// TODO(timg): this should be EntityStatement, and an EC is simply an ES where iss=sub and with
-// authority_hints
-type EntityConfiguration struct {
+type EntityStatement struct {
 	Issuer               Identifier                           `json:"iss"`
 	Subject              Identifier                           `json:"sub"`
 	IssuedAt             int64                                `json:"iat"`
@@ -129,7 +127,7 @@ type EntityConfiguration struct {
 }
 
 // ValidateEntityConfiguration validates that the provided JWS is a valid OIDF Entity Configuration.
-func ValidateEntityConfiguration(signature string) (*EntityConfiguration, error) {
+func ValidateEntityConfiguration(signature string) (*EntityStatement, error) {
 	// The JWS header indicates what algorithm it's signed with, but jose requires us to provide a
 	// list of acceptable signing algorithms. For now, we'll allow a variety of RSA PKCS1.5 and
 	// ECDSA but this should be configurable somehow.
@@ -153,9 +151,9 @@ func ValidateEntityConfiguration(signature string) (*EntityConfiguration, error)
 		return nil, fmt.Errorf("JWS header must contain kid")
 	}
 
-	// To verify the signature, we have to find the signature kid in the payload's JWKS, so we have
-	// to parse it untrusted.
-	var untrustedEntityConfiguration EntityConfiguration
+	// This is an Entity *Configuration*, so to verify the signature, we have to find the signature
+	// kid in the payload's JWKS, so we have to parse it untrusted.
+	var untrustedEntityConfiguration EntityStatement
 	if err := json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &untrustedEntityConfiguration); err != nil {
 		return nil, fmt.Errorf("could not unmarshal JWS payload: %w", err)
 	}
@@ -171,7 +169,7 @@ func ValidateEntityConfiguration(signature string) (*EntityConfiguration, error)
 		return nil, fmt.Errorf("failed to validate JWS signature: %w", err)
 	}
 
-	var trustedEntityConfiguration EntityConfiguration
+	var trustedEntityConfiguration EntityStatement
 	if err := json.Unmarshal(entityConfigurationBytes, &trustedEntityConfiguration); err != nil {
 		return nil, fmt.Errorf("could not unmarshal JWS payload %s: %w", string(entityConfigurationBytes), err)
 	}
@@ -179,9 +177,9 @@ func ValidateEntityConfiguration(signature string) (*EntityConfiguration, error)
 	return &trustedEntityConfiguration, nil
 }
 
-// FindMetadata finds metadata for the specified entity type in the EntityConfiguration and decodes
-// it into the provided metadata unmarshaler.
-func (ec *EntityConfiguration) FindMetadata(entityType EntityTypeIdentifier, metadata interface{}) error {
+// FindMetadata finds metadata for the specified entity type in the EntityStatement and decodes it
+// into the provided metadata unmarshaler.
+func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadata interface{}) error {
 	metadataMap, ok := ec.Metadata[entityType]
 	if !ok {
 		return fmt.Errorf("could not find metadata for entity %s", entityType)
@@ -323,7 +321,7 @@ func (e *Entity) EntityConfiguration() (*jose.JSONWebSignature, error) {
 		}
 	}
 
-	ec := EntityConfiguration{
+	ec := EntityStatement{
 		Issuer:               e.identifier,
 		Subject:              e.identifier,
 		IssuedAt:             time.Now().Unix(),
@@ -475,7 +473,7 @@ func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Reque
 		return err, http.StatusInternalServerError
 	}
 
-	w.Header().Set("Content-Type", EntityConfigurationContentType)
+	w.Header().Set("Content-Type", EntityStatementContentType)
 	// All JWSes MUST use compact serialization
 	// https://openid.net/specs/openid-federation-1_0-41.html#name-requirements-notation-and-c
 	if _, err := w.Write([]byte(compact)); err != nil {
