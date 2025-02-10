@@ -37,7 +37,7 @@ const (
 	// https://openid.net/specs/openid-federation-1_0-41.html#section-5.1
 	FederationEntity EntityTypeIdentifier = "federation_entity"
 	ACMERequestor    EntityTypeIdentifier = "acme_requestor"
-	ACMEProvider     EntityTypeIdentifier = "acme_provider"
+	ACMEIssuer       EntityTypeIdentifier = "acme_issuer"
 )
 
 type EntityTypeIdentifier string
@@ -207,9 +207,9 @@ type FederationEntityMetadata struct {
 	// TODO(timg): various other endpoints
 }
 
-// ACMEProviderMetadata describes an ACME issuer entity in an OpenID Federation
+// ACMEIssuerMetadata describes an ACME issuer entity in an OpenID Federation
 // https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.4.1
-type ACMEProviderMetadata struct {
+type ACMEIssuerMetadata struct {
 	// The current draft requires that the entire ACME directory appear here, but I argue in the
 	// issue below that it makes more sense to put the directory URI. That's also easier to
 	// implement.
@@ -228,8 +228,8 @@ type ACMERequestorMetadata struct {
 type EntityOptions struct {
 	// If true, metadata for the acme_requestor entity type will be constructed and advertised.
 	IsACMERequestor bool
-	// If set, the entity will advertise acme_provider metadata using the provided URL.
-	ACMEProvider *url.URL
+	// If set, the entity will advertise acme_issuer metadata using the provided URL.
+	ACMEIssuer *url.URL
 }
 
 // Entity represents an OpenID Federation Entity.
@@ -244,7 +244,7 @@ type Entity struct {
 	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#name-requestor-metadata
 	acmeRequestorKeys jose.JSONWebKeySet
 	// acmeDirectory is where an ACME server directory may be found. If non-nil, this entity has the
-	// type acme_provider (possibly alongside other entity types).
+	// type acme_issuer (possibly alongside other entity types).
 	acmeDirectory *url.URL
 	// listener may be a bound port on which requests for OpenID Federation API (i.e. entity
 	// configurations or other federation endpoints) are listened to
@@ -273,7 +273,7 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 	entity := Entity{
 		identifier:           parsedIdentifier,
 		federationEntityKeys: federationEntityKeys,
-		acmeDirectory:        options.ACMEProvider,
+		acmeDirectory:        options.ACMEIssuer,
 	}
 
 	if options.IsACMERequestor {
@@ -318,7 +318,7 @@ func (e *Entity) EntityConfiguration() (*jose.JSONWebSignature, error) {
 	}
 
 	if e.acmeDirectory != nil {
-		metadata[ACMEProvider] = ACMEProviderMetadata{
+		metadata[ACMEIssuer] = ACMEIssuerMetadata{
 			Directory: e.acmeDirectory.String(),
 		}
 	}
