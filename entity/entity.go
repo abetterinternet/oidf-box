@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
-	"github.com/tgeoghegan/oidf-box/httpclient"
 )
 
 const (
@@ -39,6 +38,12 @@ const (
 	FederationEntity EntityTypeIdentifier = "federation_entity"
 	ACMERequestor    EntityTypeIdentifier = "acme_requestor"
 	ACMEIssuer       EntityTypeIdentifier = "acme_issuer"
+	None             EntityTypeIdentifier = ""
+
+	// Query parameters for federation endpoints
+	QueryParamSub          = "sub"
+	QueryParamEntityType   = "entity_Type"
+	QueryParamIntermeidate = "intermediate"
 )
 
 type EntityTypeIdentifier string
@@ -46,7 +51,7 @@ type EntityTypeIdentifier string
 // Identifier identifies an entity in an OpenID Federation.
 // https://openid.net/specs/openid-federation-1_0-41.html#section-1.2-3.4
 type Identifier struct {
-	url url.URL
+	URL url.URL
 }
 
 // NewIdentifier returns an EntityIdentifier if it the provided identifier is a valid OpenID
@@ -77,7 +82,7 @@ func NewIdentifier(identifier string) (Identifier, error) {
 			"identifier '%s' is not a valid OIDF entity identifier: has query", identifier)
 	}
 
-	return Identifier{url: *entityURL}, nil
+	return Identifier{URL: *entityURL}, nil
 }
 
 func (i *Identifier) Equals(other *Identifier) bool {
@@ -89,11 +94,11 @@ func (i *Identifier) Equals(other *Identifier) bool {
 		return false
 	}
 
-	return i.url.String() == other.url.String()
+	return i.URL.String() == other.URL.String()
 }
 
 func (i *Identifier) String() string {
-	return i.url.String()
+	return i.URL.String()
 }
 
 func (i Identifier) MarshalJSON() ([]byte, error) {
@@ -129,11 +134,15 @@ type EntityStatement struct {
 	// TODO(timg): constraints, crit, trust marks
 }
 
-// ValidateEntityConfiguration validates that the provided JWS is a valid OIDF Entity Configuration.
-func ValidateEntityConfiguration(signature string) (*EntityStatement, error) {
+// ValidateEntityStatement validates that the provided signature is a well formed JSON web signature
+// whose payload is a well formed OpenID Federation entity statement. The JWS signature is validated
+// using one of the keys in the provided JWKS, or with a key inside the payload (in which case the
+// payload is an entity configuration).
+func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*EntityStatement, error) {
 	// The JWS header indicates what algorithm it's signed with, but jose requires us to provide a
-	// list of acceptable signing algorithms. For now, we'll allow a variety of RSA PKCS1.5 and
-	// ECDSA but this should be configurable somehow.
+	// list of acceptable signing algorithms.
+	// TODO(timg): For now, we'll allow a variety of RSA PKCS1.5 and ECDSA algorithms but this
+	// should be configurable somehow.
 	jws, err := jose.ParseSigned(signature, []jose.SignatureAlgorithm{
 		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512,
 	})
@@ -154,30 +163,40 @@ func ValidateEntityConfiguration(signature string) (*EntityStatement, error) {
 		return nil, fmt.Errorf("JWS header must contain kid")
 	}
 
-	// This is an Entity *Configuration*, so to verify the signature, we have to find the signature
-	// kid in the payload's JWKS, so we have to parse it untrusted.
-	var untrustedEntityConfiguration EntityStatement
-	if err := json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &untrustedEntityConfiguration); err != nil {
-		return nil, fmt.Errorf("could not unmarshal JWS payload: %w", err)
+	if keys == nil {
+		// This is an Entity *Configuration*, so to verify the signature, we have to find the signature
+		// kid in the payload's JWKS, so we have to parse it untrusted.
+		var untrustedEntityConfiguration EntityStatement
+		if err := json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &untrustedEntityConfiguration); err != nil {
+			return nil, fmt.Errorf("could not unmarshal JWS payload: %w", err)
+		}
+
+		// We should probably not examine anything in the payload until the signature is validated
+		// but it's convenient to do this now.
+		if untrustedEntityConfiguration.Issuer != untrustedEntityConfiguration.Subject {
+			return nil, fmt.Errorf("iss and sub MUST be identical in entity configuration")
+		}
+
+		keys = &untrustedEntityConfiguration.FederationEntityKeys
 	}
 
-	verificationKeys := untrustedEntityConfiguration.FederationEntityKeys.Key(jws.Signatures[0].Header.KeyID)
+	verificationKeys := keys.Key(jws.Signatures[0].Header.KeyID)
 
 	if len(verificationKeys) != 1 {
 		return nil, fmt.Errorf("found no or multiple keys in JWKS matching header kid")
 	}
 
-	entityConfigurationBytes, err := jws.Verify(verificationKeys[0])
+	entityStatementBytes, err := jws.Verify(verificationKeys[0])
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate JWS signature: %w", err)
 	}
 
-	var trustedEntityConfiguration EntityStatement
-	if err := json.Unmarshal(entityConfigurationBytes, &trustedEntityConfiguration); err != nil {
-		return nil, fmt.Errorf("could not unmarshal JWS payload %s: %w", string(entityConfigurationBytes), err)
+	var trustedEntityStatement EntityStatement
+	if err := json.Unmarshal(entityStatementBytes, &trustedEntityStatement); err != nil {
+		return nil, fmt.Errorf("could not unmarshal JWS payload %s: %w", string(entityStatementBytes), err)
 	}
 
-	return &trustedEntityConfiguration, nil
+	return &trustedEntityStatement, nil
 }
 
 // FindMetadata finds metadata for the specified entity type in the EntityStatement and decodes it
@@ -230,7 +249,7 @@ type EntityOptions struct {
 	// If true, metadata for the acme_requestor entity type will be constructed and advertised.
 	IsACMERequestor bool
 	// If set, the entity will advertise acme_issuer metadata using the provided URL.
-	ACMEIssuer *url.URL
+	ACMEIssuer string
 	// Trust anchors trusted by this entity.
 	TrustAnchors []string
 }
@@ -259,8 +278,8 @@ type Entity struct {
 	// TODO(timg): this should be a set, or failing that map[Identifier]struct{}
 	superiors []Identifier
 
-	// client is used for HTTP requests
-	client httpclient.Client
+	// client is used for OpenID Federation API requests
+	client HTTPClient
 	// listener may be a bound port on which requests for OpenID Federation API (i.e. entity
 	// configurations or other federation endpoints) are listened to
 	listener net.Listener
@@ -299,8 +318,7 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 		Identifier:           parsedIdentifier,
 		trustAnchors:         trustAnchors,
 		federationEntityKeys: federationEntityKeys,
-		acmeDirectory:        options.ACMEIssuer,
-		client:               httpclient.New(),
+		client:               NewOIDFClient(),
 		subordinates:         make(map[Identifier]EntityStatement),
 		superiors:            []Identifier{},
 	}
@@ -323,6 +341,15 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 		}
 
 		entity.acmeRequestorKeys = acmeRequestorKeys
+	}
+
+	if options.ACMEIssuer != "" {
+		url, err := url.Parse(options.ACMEIssuer)
+		if err != nil {
+			return Entity{}, fmt.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
+		}
+
+		entity.acmeDirectory = url
 	}
 
 	return entity, nil
@@ -375,8 +402,8 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 func (e *Entity) entityConfiguration() EntityStatement {
 	metadata := map[EntityTypeIdentifier]interface{}{
 		FederationEntity: FederationEntityMetadata{
-			FetchEndpoint: FederationFetchEndpoint,
-			ListEndpoint:  FederationListEndpoint,
+			FetchEndpoint: e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
+			ListEndpoint:  e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
 			// TODO(timg): informational metadata
 			// https://openid.net/specs/openid-federation-1_0-41.html#section-5.2.2
 		},
@@ -410,25 +437,6 @@ func (e *Entity) SignedEntityConfiguration() (*jose.JSONWebSignature, error) {
 	return e.signEntityStatement(e.entityConfiguration())
 }
 
-// FetchEntityConfiguration obtains an entity configuration for the provided identifier per
-// https://openid.net/specs/openid-federation-1_0-41.html#section-9
-func (e *Entity) FetchEntityConfiguration(identifier Identifier) (*EntityStatement, error) {
-	// TODO(timg): I'd prefer this to be a method on EntityStatement, but sticking it on Entity
-	// makes it easier to use the HTTP client
-	entityConfigurationURL := identifier.url.JoinPath(EntityConfigurationPath)
-	ecBytes, err := e.client.Get(*entityConfigurationURL, EntityStatementContentType)
-	if err != nil {
-		return nil, err
-	}
-
-	entityConfiguration, err := ValidateEntityConfiguration(string(ecBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate EC: %w", err)
-	}
-
-	return entityConfiguration, nil
-}
-
 // AddSubordinate makes this entity add the provided subordinate to its list of federation
 // subordinates. If successful, an entity statement for the subordinate will be available from this
 // entity's federation fetch and subordinate list endpoints. Callers are responsible for updating
@@ -438,7 +446,7 @@ func (e *Entity) FetchEntityConfiguration(identifier Identifier) (*EntityStateme
 // This interface does not conform to any part of the OpenID Federation specification (which says
 // nothing about establishing subordination) and is only expected to work within this project.
 func (e *Entity) AddSubordinate(subordinate Identifier) error {
-	subordinateEC, err := e.FetchEntityConfiguration(subordinate)
+	entity, err := e.client.NewFederationEndpoints(subordinate)
 	if err != nil {
 		return err
 	}
@@ -448,13 +456,13 @@ func (e *Entity) AddSubordinate(subordinate Identifier) error {
 	// subordinate presented to us.
 
 	// Construct the equivalent entity statement
-	subordinateEC.Issuer = e.Identifier
-	subordinateEC.IssuedAt = time.Now().Unix()
-	subordinateEC.Expiration = time.Now().Unix() + 3600 // valid for 1 hour
+	entity.Entity.Issuer = e.Identifier
+	entity.Entity.IssuedAt = time.Now().Unix()
+	entity.Entity.Expiration = time.Now().Unix() + 3600 // valid for 1 hour
 	// authority_hints is forbidden in an entity statement
-	subordinateEC.AuthorityHints = nil
+	entity.Entity.AuthorityHints = nil
 
-	e.subordinates[subordinate] = *subordinateEC
+	e.subordinates[subordinate] = entity.Entity
 
 	return nil
 }
@@ -471,7 +479,7 @@ func (e *Entity) AddSuperior(superior Identifier) {
 func (e *Entity) ServeFederationEndpoints() error {
 	// Listen at whatever port is in the identifier, which may not be right
 	var err error
-	e.listener, err = net.Listen("tcp", net.JoinHostPort("", e.Identifier.url.Port()))
+	e.listener, err = net.Listen("tcp", net.JoinHostPort("", e.Identifier.URL.Port()))
 	if err != nil {
 		return fmt.Errorf("could not start HTTP server for OIDF EC: %w", err)
 	}
