@@ -68,10 +68,12 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 
 // Get does an HTTP GET of the specified resource and validates that the response has the expected
 // Content-Type header and returns the response body.
-func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[string]string) ([]byte, error) {
+func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[string][]string) ([]byte, error) {
 	query := resource.Query()
 	for k, v := range queryParams {
-		query.Add(k, v)
+		for _, v2 := range v {
+			query.Add(k, v2)
+		}
 	}
 	resource.RawQuery = query.Encode()
 
@@ -80,6 +82,11 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 		return nil, fmt.Errorf("failed to fetch EC: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// TODO(timg): probably not all GETs will yield HTTP 200 OK
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("response has unexpected HTTP status: %d", resp.StatusCode)
+	}
 
 	if resp.Header.Get("Content-Type") != contentType {
 		return nil, fmt.Errorf("response has wrong content type: %s", resp.Header.Get("Content-Type"))
@@ -106,8 +113,8 @@ type FederationEndpoints struct {
 // SubordinateStatement fetches a subordinate statement for the provided entity.
 // https://openid.net/specs/openid-federation-1_0-41.html#name-fetch-subordinate-statement
 func (fe *FederationEndpoints) SubordinateStatement(subordinate Identifier) (*EntityStatement, error) {
-	esBytes, err := fe.client.get(fe.fetchEndpoint, EntityStatementContentType, map[string]string{
-		QueryParamSub: subordinate.String(),
+	esBytes, err := fe.client.get(fe.fetchEndpoint, EntityStatementContentType, map[string][]string{
+		QueryParamSub: {subordinate.String()},
 	})
 	if err != nil {
 		return nil, err
@@ -125,14 +132,18 @@ func (fe *FederationEndpoints) SubordinateStatement(subordinate Identifier) (*En
 // https://openid.net/specs/openid-federation-1_0-41.html#name-subordinate-listings
 // TODO(timg): arguments for trust_marked and trust_mark_id
 func (fe *FederationEndpoints) ListSubordinates(
-	entityType EntityTypeIdentifier, intermediate bool,
+	entityTypes []EntityTypeIdentifier, intermediate bool,
 ) ([]Identifier, error) {
-	queryParams := make(map[string]string)
-	if entityType != None {
-		queryParams[QueryParamEntityType] = string(entityType)
+	queryParams := make(map[string][]string)
+	if len(entityTypes) != 0 {
+		entityTypeStrings := []string{}
+		for _, entityType := range entityTypes {
+			entityTypeStrings = append(entityTypeStrings, string(entityType))
+		}
+		queryParams[QueryParamEntityType] = entityTypeStrings
 	}
 	if intermediate {
-		queryParams[QueryParamIntermeidate] = "true"
+		queryParams[QueryParamIntermediate] = []string{"true"}
 	}
 
 	// TODO(timg): wire up trustMarked and trustMarkID

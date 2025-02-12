@@ -1,7 +1,7 @@
 package entity
 
 import (
-	"fmt"
+	_ "fmt"
 	"slices"
 	"testing"
 )
@@ -305,60 +305,57 @@ func TestFederationList(t *testing.T) {
 
 	oidfClient := NewOIDFClient()
 	for _, testCase := range []struct {
-		name                  string
-		entity                *Entity
-		subordinateEntityType EntityTypeIdentifier
-		intermediate          bool
-		expectedSubordinates  []*Entity
+		name                   string
+		entity                 *Entity
+		subordinateEntityTypes []EntityTypeIdentifier
+		intermediate           bool
+		shouldFail             bool
+		expectedSubordinates   []*Entity
 	}{
 		{
-			name:                  "all trust anchor subs",
-			entity:                trustAnchor,
-			subordinateEntityType: None,
-			intermediate:          false,
-			expectedSubordinates:  []*Entity{leafEntity, intermediate},
+			name:                 "all trust anchor subs",
+			entity:               trustAnchor,
+			expectedSubordinates: []*Entity{leafEntity, intermediate},
 		},
 		{
-			name:                  "intermediate trust anchor subs",
-			entity:                trustAnchor,
-			subordinateEntityType: None,
-			intermediate:          true,
-			expectedSubordinates:  []*Entity{intermediate},
+			name:         "intermediate trust anchor subs",
+			entity:       trustAnchor,
+			intermediate: true,
+			shouldFail:   true,
 		},
 		{
-			name:                  "ACME issuer trust anchor subs",
-			entity:                trustAnchor,
-			subordinateEntityType: ACMEIssuer,
-			intermediate:          false,
-			expectedSubordinates:  []*Entity{},
+			name:                   "ACME issuer trust anchor subs",
+			entity:                 trustAnchor,
+			subordinateEntityTypes: []EntityTypeIdentifier{ACMEIssuer},
+			expectedSubordinates:   []*Entity{},
 		},
 		{
-			name:                  "ACME issuer intermediate subs",
-			entity:                intermediate,
-			subordinateEntityType: ACMEIssuer,
-			intermediate:          false,
-			expectedSubordinates:  []*Entity{acmeIssuer},
+			name:                   "ACME issuer intermediate subs",
+			entity:                 intermediate,
+			subordinateEntityTypes: []EntityTypeIdentifier{ACMEIssuer},
+			expectedSubordinates:   []*Entity{acmeIssuer},
 		},
 		{
-			name:                  "ACME requestor intermediate subs",
-			entity:                intermediate,
-			subordinateEntityType: ACMERequestor,
-			intermediate:          false,
-			expectedSubordinates:  []*Entity{acmeRequestor},
+			name:                   "ACME issuer or requestor intermediate subs",
+			entity:                 intermediate,
+			subordinateEntityTypes: []EntityTypeIdentifier{ACMEIssuer, ACMERequestor},
+			expectedSubordinates:   []*Entity{acmeIssuer, acmeRequestor},
 		},
 		{
-			name:                  "intermediate intermediate subs",
-			entity:                intermediate,
-			subordinateEntityType: None,
-			intermediate:          true,
-			expectedSubordinates:  []*Entity{},
+			name:                   "ACME requestor intermediate subs",
+			entity:                 intermediate,
+			subordinateEntityTypes: []EntityTypeIdentifier{ACMERequestor},
+			expectedSubordinates:   []*Entity{acmeRequestor},
 		},
 		{
-			name:                  "leaf entity subs",
-			entity:                leafEntity,
-			subordinateEntityType: None,
-			intermediate:          false,
-			expectedSubordinates:  []*Entity{},
+			name:         "intermediate intermediate subs",
+			entity:       intermediate,
+			intermediate: true,
+			shouldFail:   true,
+		},
+		{
+			name:   "leaf entity subs",
+			entity: leafEntity,
 		},
 	} {
 
@@ -370,18 +367,24 @@ func TestFederationList(t *testing.T) {
 					testCase.entity.Identifier, err.Error())
 			}
 
-			subordinates, err := endpoint.ListSubordinates(testCase.subordinateEntityType, testCase.intermediate)
-			if err != nil {
-				t.Fatalf("failed to list subordinates for %+v: %s",
-					testCase.entity.Identifier, err.Error())
-			}
+			subordinates, err := endpoint.ListSubordinates(testCase.subordinateEntityTypes, testCase.intermediate)
+			if testCase.shouldFail {
+				if err == nil {
+					t.Fatalf("listing subordinates should fail")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("failed to list subordinates for %+v: %s",
+						testCase.entity.Identifier, err.Error())
+				}
 
-			if len(testCase.expectedSubordinates) != len(subordinates) {
-				t.Errorf("unexpected subordinate listing: %+v", subordinates)
-			}
-			for _, sub := range testCase.expectedSubordinates {
-				if !slices.Contains(subordinates, sub.Identifier) {
+				if len(testCase.expectedSubordinates) != len(subordinates) {
 					t.Errorf("unexpected subordinate listing: %+v", subordinates)
+				}
+				for _, sub := range testCase.expectedSubordinates {
+					if !slices.Contains(subordinates, sub.Identifier) {
+						t.Errorf("unexpected subordinate listing: %+v", subordinates)
+					}
 				}
 			}
 		})
