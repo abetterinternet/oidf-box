@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -143,33 +144,27 @@ func TestACMEIssuer(t *testing.T) {
 func TestTrustChain(t *testing.T) {
 	// Construct entities for trust chain of length 3
 	// TODO(timg): this is brittle as these ports may already be bound
-	trustAnchor, err := New("http://localhost:8001", EntityOptions{})
+	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{})
 	if err != nil {
 		t.Fatalf("failed to construct trust anchor: %s", err.Error())
 	}
-	if err := trustAnchor.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer trustAnchor.CleanUp()
 
-	intermediate, err := New("http://localhost:8002", EntityOptions{
+	intermediate, err := NewAndServe("http://localhost:8002", EntityOptions{
 		TrustAnchors: []string{"http://localhost:8001"},
 	})
 	if err != nil {
 		t.Fatalf("failed to construct intermediate: %s", err.Error())
 	}
-	if err := intermediate.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer intermediate.CleanUp()
 
-	leafEntity, err := New("http://localhost:8003", EntityOptions{
+	leafEntity, err := NewAndServe("http://localhost:8003", EntityOptions{
 		TrustAnchors: []string{"http://localhost:8001"},
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
 	}
-	if err := leafEntity.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer leafEntity.CleanUp()
 
 	// Create subordinations
 	if err := intermediate.AddSubordinate(leafEntity.Identifier); err != nil {
@@ -191,7 +186,7 @@ func TestTrustChain(t *testing.T) {
 	}
 	if len(leafEntityClient.Entity.AuthorityHints) != 1 ||
 		!slices.Contains(leafEntityClient.Entity.AuthorityHints, intermediate.Identifier) {
-		t.Errorf("leaf entity EC has unexpected authority hints: %+v", leafEntityClient.Entity.AuthorityHints)
+		t.Errorf("leaf entity EC has unexpected authority hints: %+v\n %+v\n", leafEntityClient.Entity.AuthorityHints, leafEntity.superiors)
 	}
 
 	intermediateClient, err := oidfClient.NewFederationEndpoints(leafEntityClient.Entity.AuthorityHints[0])
@@ -247,52 +242,45 @@ func TestTrustChain(t *testing.T) {
 }
 
 func TestFederationList(t *testing.T) {
-	trustAnchor, err := New("http://localhost:8001", EntityOptions{})
+	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{})
 	if err != nil {
 		t.Fatalf("failed to construct trust anchor: %s", err.Error())
 	}
-	if err := trustAnchor.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer trustAnchor.CleanUp()
 
-	intermediate, err := New("http://localhost:8002", EntityOptions{
+	intermediate, err := NewAndServe("http://localhost:8002", EntityOptions{
 		TrustAnchors: []string{"http://localhost:8001"},
 	})
 	if err != nil {
 		t.Fatalf("failed to construct intermediate: %s", err.Error())
 	}
-	if err := intermediate.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer intermediate.CleanUp()
 
-	leafEntity, err := New("http://localhost:8005", EntityOptions{
+	leafEntity, err := NewAndServe("http://localhost:8005", EntityOptions{
 		TrustAnchors: []string{"http://localhost:8001"},
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity")
 	}
+	defer leafEntity.CleanUp()
 
-	acmeRequestor, err := New("http://localhost:8003", EntityOptions{
+	acmeRequestor, err := NewAndServe("http://localhost:8003", EntityOptions{
 		TrustAnchors:    []string{"http://localhost:8001"},
 		IsACMERequestor: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
 	}
-	if err := acmeRequestor.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer acmeRequestor.CleanUp()
 
-	acmeIssuer, err := New("http://localhost:8004", EntityOptions{
+	acmeIssuer, err := NewAndServe("http://localhost:8004", EntityOptions{
 		TrustAnchors: []string{"http://localhost:8001"},
 		ACMEIssuer:   "http://example.com",
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
 	}
-	if err := acmeIssuer.ServeFederationEndpoints(); err != nil {
-		t.Fatalf("failed to serve trust anchor endpoints: %s", err.Error())
-	}
+	defer acmeIssuer.CleanUp()
 
 	// Create subordinations
 	if err := trustAnchor.AddSubordinate(intermediate.Identifier); err != nil {
@@ -318,59 +306,59 @@ func TestFederationList(t *testing.T) {
 	oidfClient := NewOIDFClient()
 	for _, testCase := range []struct {
 		name                  string
-		entity                Entity
+		entity                *Entity
 		subordinateEntityType EntityTypeIdentifier
 		intermediate          bool
-		expectedSubordinates  []Entity
+		expectedSubordinates  []*Entity
 	}{
 		{
 			name:                  "all trust anchor subs",
 			entity:                trustAnchor,
 			subordinateEntityType: None,
 			intermediate:          false,
-			expectedSubordinates:  []Entity{leafEntity, intermediate},
+			expectedSubordinates:  []*Entity{leafEntity, intermediate},
 		},
 		{
 			name:                  "intermediate trust anchor subs",
 			entity:                trustAnchor,
 			subordinateEntityType: None,
 			intermediate:          true,
-			expectedSubordinates:  []Entity{intermediate},
+			expectedSubordinates:  []*Entity{intermediate},
 		},
 		{
 			name:                  "ACME issuer trust anchor subs",
 			entity:                trustAnchor,
 			subordinateEntityType: ACMEIssuer,
 			intermediate:          false,
-			expectedSubordinates:  []Entity{},
+			expectedSubordinates:  []*Entity{},
 		},
 		{
 			name:                  "ACME issuer intermediate subs",
 			entity:                intermediate,
 			subordinateEntityType: ACMEIssuer,
 			intermediate:          false,
-			expectedSubordinates:  []Entity{acmeIssuer},
+			expectedSubordinates:  []*Entity{acmeIssuer},
 		},
 		{
 			name:                  "ACME requestor intermediate subs",
 			entity:                intermediate,
 			subordinateEntityType: ACMERequestor,
 			intermediate:          false,
-			expectedSubordinates:  []Entity{acmeRequestor},
+			expectedSubordinates:  []*Entity{acmeRequestor},
 		},
 		{
 			name:                  "intermediate intermediate subs",
 			entity:                intermediate,
 			subordinateEntityType: None,
 			intermediate:          true,
-			expectedSubordinates:  []Entity{},
+			expectedSubordinates:  []*Entity{},
 		},
 		{
 			name:                  "leaf entity subs",
 			entity:                leafEntity,
 			subordinateEntityType: None,
 			intermediate:          false,
-			expectedSubordinates:  []Entity{},
+			expectedSubordinates:  []*Entity{},
 		},
 	} {
 

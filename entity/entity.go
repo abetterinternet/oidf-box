@@ -288,17 +288,17 @@ type Entity struct {
 }
 
 // New constructs a new Entity, generating keys as needed.
-func New(identifier string, options EntityOptions) (Entity, error) {
+func New(identifier string, options EntityOptions) (*Entity, error) {
 	parsedIdentifier, err := NewIdentifier(identifier)
 	if err != nil {
-		return Entity{}, fmt.Errorf("failed to parse identifier '%s': %w", identifier, err)
+		return nil, fmt.Errorf("failed to parse identifier '%s': %w", identifier, err)
 	}
 
 	var trustAnchors []Identifier
 	for _, trustAnchor := range options.TrustAnchors {
 		parsedTrustAnchor, err := NewIdentifier(trustAnchor)
 		if err != nil {
-			return Entity{}, fmt.Errorf("invalid trust anchor identifier %s", trustAnchor)
+			return nil, fmt.Errorf("invalid trust anchor identifier %s", trustAnchor)
 		}
 
 		trustAnchors = append(trustAnchors, parsedTrustAnchor)
@@ -307,11 +307,11 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 	// Generate the federation entity keys. Hard code a single 2048 bit RSA key for now.
 	federationEntityKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return Entity{}, fmt.Errorf("failed to generate key: %w", err)
+		return nil, fmt.Errorf("failed to generate key: %w", err)
 	}
 	federationEntityKeys, err := privateJWKS([]interface{}{federationEntityKey})
 	if err != nil {
-		return Entity{}, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
+		return nil, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
 	}
 
 	entity := Entity{
@@ -327,17 +327,17 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 		// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
 		rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			return Entity{}, fmt.Errorf("failed to generate RSA key to certify: %w", err)
+			return nil, fmt.Errorf("failed to generate RSA key to certify: %w", err)
 		}
 
 		ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
-			return Entity{}, fmt.Errorf("failed to generate P256 key to certify: %w", err)
+			return nil, fmt.Errorf("failed to generate P256 key to certify: %w", err)
 		}
 
 		acmeRequestorKeys, err := privateJWKS([]interface{}{rsaACMERequestorKey, ecACMERequestorKey})
 		if err != nil {
-			return Entity{}, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
+			return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
 		}
 
 		entity.acmeRequestorKeys = acmeRequestorKeys
@@ -346,13 +346,27 @@ func New(identifier string, options EntityOptions) (Entity, error) {
 	if options.ACMEIssuer != "" {
 		url, err := url.Parse(options.ACMEIssuer)
 		if err != nil {
-			return Entity{}, fmt.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
+			return nil, fmt.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
 		}
 
 		entity.acmeDirectory = url
 	}
 
-	return entity, nil
+	return &entity, nil
+}
+
+// NewAndServe calls New, and then calls ServeFederationEndpoints.
+func NewAndServe(identifier string, options EntityOptions) (*Entity, error) {
+	entity, err := New(identifier, options)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := entity.ServeFederationEndpoints(); err != nil {
+		return nil, err
+	}
+
+	return entity, err
 }
 
 // signEntityStatement signs an entity statement using this entity's federation entity keys.
@@ -495,7 +509,9 @@ func (e *Entity) ServeFederationEndpoints() error {
 			}
 		})
 		mux.HandleFunc(FederationFetchEndpoint, func(w http.ResponseWriter, r *http.Request) {
-			panic("not implemented")
+			if err, status := e.federationFetchHandler(w, r); err != nil {
+				http.Error(w, err.Error(), status)
+			}
 		})
 		mux.HandleFunc(FederationListEndpoint, func(w http.ResponseWriter, r *http.Request) {
 			panic("not implemented")
@@ -579,6 +595,43 @@ func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", EntityStatementContentType)
 	// All JWSes MUST use compact serialization
 	// https://openid.net/specs/openid-federation-1_0-41.html#name-requirements-notation-and-c
+	if _, err := w.Write([]byte(compact)); err != nil {
+		return err, http.StatusInternalServerError
+	}
+
+	return nil, http.StatusOK
+}
+
+func (e *Entity) federationFetchHandler(w http.ResponseWriter, r *http.Request) (error, int) {
+	if r.Method != http.MethodGet {
+		return fmt.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
+	}
+
+	subordinate := r.URL.Query().Get(QueryParamSub)
+	if subordinate == "" {
+		// TODO(timg): error responses confirming to https://openid.net/specs/openid-federation-1_0-41.html#section-8.9
+		return fmt.Errorf("sub query parameter is required"), http.StatusBadRequest
+	}
+
+	subordinateIdentifier, err := NewIdentifier(subordinate)
+	if err != nil {
+		return fmt.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
+	}
+
+	subordinateStatement, ok := e.subordinates[subordinateIdentifier]
+	if !ok {
+		return fmt.Errorf("subordinate '%s' not found", subordinate), http.StatusNotFound
+	}
+	signedSub, err := e.signEntityStatement(subordinateStatement)
+	if err != nil {
+		return fmt.Errorf("failed to sign subordinate statement: %w", err), http.StatusInternalServerError
+	}
+	compact, err := signedSub.CompactSerialize()
+	if err != nil {
+		return err, http.StatusInternalServerError
+	}
+
+	w.Header().Set("Content-Type", EntityStatementContentType)
 	if _, err := w.Write([]byte(compact)); err != nil {
 		return err, http.StatusInternalServerError
 	}
