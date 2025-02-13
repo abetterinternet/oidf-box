@@ -189,66 +189,27 @@ func TestTrustChain(t *testing.T) {
 	}
 	intermediate.AddSuperior(trustAnchor.Identifier)
 
-	// Build a trust chain from leaf entity to trust anchor by re-fetching ECs (hence new
-	// FederationEndpoints, examining authority_hints and then getting subordinate statements
-	leafEntityClient, err := oidfClient.NewFederationEndpoints(leafEntity.Identifier)
+	trustChain, err := leafEntity.EvaluateTrust(leafEntity.Identifier)
 	if err != nil {
-		t.Fatalf(err.Error())
-	}
-	if len(leafEntityClient.Entity.AuthorityHints) != 1 ||
-		!slices.Contains(leafEntityClient.Entity.AuthorityHints, intermediate.Identifier) {
-		t.Errorf("leaf entity EC has unexpected authority hints: %+v", leafEntityClient.Entity.AuthorityHints)
+		t.Errorf("failed to evaluate trust: %s", err.Error())
 	}
 
-	intermediateClient, err = oidfClient.NewFederationEndpoints(leafEntityClient.Entity.AuthorityHints[0])
+	if !trustChain[0].Subject.Equals(&leafEntity.Identifier) ||
+		!trustChain[1].Subject.Equals(&intermediate.Identifier) ||
+		!trustChain[2].Subject.Equals(&trustAnchor.Identifier) {
+		t.Errorf("unexpected trust chain %v", trustChain)
+	}
+
+	// Construct an unrelated entity untrusted by anybody, and it shouldn't be possible to construct
+	// a chain for it
+	untrustedEntity, err := NewAndServe("http://localhost:8004", EntityOptions{})
 	if err != nil {
-		t.Fatalf("failed to construct federation endpoints for intermdiate: %s", err.Error())
+		t.Fatalf("failed to construct entity")
 	}
+	defer untrustedEntity.CleanUp()
 
-	leafEntityStatement, err := intermediateClient.SubordinateStatement(leafEntity.Identifier)
-	if err != nil {
-		t.Fatalf("failed to get ES for leaf: %s", err.Error())
-	}
-
-	if leafEntityStatement.Subject != leafEntity.Identifier ||
-		leafEntityStatement.Issuer != intermediate.Identifier {
-		t.Errorf("leaf ES iss/sub wrong: %+v / %+v",
-			leafEntityStatement.Issuer, leafEntityStatement.Subject)
-	}
-
-	if leafEntityStatement.AuthorityHints != nil {
-		t.Errorf("leaf ES contains authority hints")
-	}
-
-	if len(intermediateClient.Entity.AuthorityHints) != 1 ||
-		!slices.Contains(intermediateClient.Entity.AuthorityHints, trustAnchor.Identifier) {
-		t.Errorf("intermediate EC has unexpected authority hints: %+v",
-			intermediateClient.Entity.AuthorityHints)
-	}
-
-	trustAnchorClient, err = oidfClient.NewFederationEndpoints(intermediateClient.Entity.AuthorityHints[0])
-	if err != nil {
-		t.Fatalf("failed to construct federation endpoints for trust anchor: %s", err.Error())
-	}
-
-	if len(trustAnchorClient.Entity.AuthorityHints) != 0 {
-		t.Errorf("trust anchor EC has unexpected authority hints: %+v",
-			trustAnchor.entityConfiguration().AuthorityHints)
-	}
-
-	intermediateEntityStatement, err := trustAnchorClient.SubordinateStatement(intermediate.Identifier)
-	if err != nil {
-		t.Fatalf(err.Error())
-	}
-
-	if intermediateEntityStatement.Subject != intermediate.Identifier ||
-		intermediateEntityStatement.Issuer != trustAnchor.Identifier {
-		t.Errorf("intermediate ES iss/sub wrong: %+v / %+v",
-			intermediateEntityStatement.Issuer, intermediateEntityStatement.Subject)
-	}
-
-	if intermediateEntityStatement.AuthorityHints != nil {
-		t.Errorf("intermediate ES contains authority hints")
+	if _, err := leafEntity.EvaluateTrust(untrustedEntity.Identifier); err == nil {
+		t.Errorf("untrusted entity should not be trusted")
 	}
 }
 

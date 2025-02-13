@@ -153,6 +153,7 @@ type Entity struct {
 	superiors []Identifier
 
 	// client is used for OpenID Federation API requests
+	// TODO(timg): cache instances of FederationEndpoints
 	client HTTPClient
 	// listener may be a bound port on which requests for OpenID Federation API (i.e. entity
 	// configurations or other federation endpoints) are listened to
@@ -457,6 +458,60 @@ func (e *Entity) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 	}
 
 	return signed, nil
+}
+
+// EvaluateTrust checks whether this entity trusts otherEntity. This function assumes all entities
+// have a single superior. It walks the tree upwards until it finds a trust anchor and checks
+// whether that anchor is trusted. Returns the trust chain of entity statements if otherEntity is
+// trusted. The leaf entity is at index 0, the trust anchor is last.
+func (e *Entity) EvaluateTrust(otherEntity Identifier) ([]EntityStatement, error) {
+	currentEntity, err := e.client.NewFederationEndpoints(otherEntity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct federation endpoints for '%s': %w",
+			otherEntity.String(), err)
+	}
+	trustChain := []EntityStatement{currentEntity.Entity}
+	var trustAnchor *EntityStatement
+
+	for {
+		// TODO(timg): should check if we're evaluating a ridiculously long chain and bail out, or
+		// check for cycles in the chain
+
+		// Have we hit a trust anchor?
+		if len(currentEntity.Entity.AuthorityHints) == 0 {
+			trustAnchor = &currentEntity.Entity
+			break
+		}
+
+		if len(currentEntity.Entity.AuthorityHints) > 1 {
+			return nil, fmt.Errorf("non-trivial trust chains not supported")
+		}
+
+		// Get entity configuration for next superior
+		superiorEntity, err := e.client.NewFederationEndpoints(currentEntity.Entity.AuthorityHints[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to construct federation endpoints for '%s': %w",
+				currentEntity.Entity.AuthorityHints[0].String(), err)
+		}
+
+		// Check that the superior subordinates the current entity
+		_, err = superiorEntity.SubordinateStatement(currentEntity.Entity.Subject)
+		if err != nil {
+			return nil, fmt.Errorf("could not get subordinate statement for '%s' from superior '%s': %w",
+				currentEntity.Entity.Subject.String(), superiorEntity.Entity.Subject.String(), err)
+		}
+
+		trustChain = append(trustChain, superiorEntity.Entity)
+		currentEntity = superiorEntity
+	}
+
+	// We found a trust anchor. Check if we trust it.
+	if !slices.Contains(e.trustAnchors, trustAnchor.Subject) {
+		return nil, fmt.Errorf("trust anchor '%s' for constructed chain is not trusted",
+			trustAnchor.Subject.String())
+	}
+
+	return trustChain, nil
 }
 
 func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Request) (error, int) {
