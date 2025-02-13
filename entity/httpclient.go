@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // HTTPClient is a client used for HTTP requests to OIDF entities. It allows re-use of a single
@@ -57,12 +58,20 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 			federationEntityMetadata.ListEndpoint, err,
 		)
 	}
+	subordination, err := url.Parse(federationEntityMetadata.SubordinationEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"bad subordination endpoint '%s' in federation entity metadata: %w",
+			federationEntityMetadata.SubordinationEndpoint, err,
+		)
+	}
 
 	return &FederationEndpoints{
-		client:        *c,
-		Entity:        *entityConfiguration,
-		fetchEndpoint: *fetch,
-		listEndpoint:  *list,
+		client:                *c,
+		Entity:                *entityConfiguration,
+		fetchEndpoint:         *fetch,
+		listEndpoint:          *list,
+		subordinationEndpoint: *subordination,
 	}, nil
 }
 
@@ -103,10 +112,11 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 // FederationEndpoints provides a client for (some of, WIP) a specific entity's federation endpoints
 // defined in https://openid.net/specs/openid-federation-1_0-41.html#name-federation-endpoints
 type FederationEndpoints struct {
-	client        HTTPClient
-	Entity        EntityStatement
-	fetchEndpoint url.URL
-	listEndpoint  url.URL
+	client                HTTPClient
+	Entity                EntityStatement
+	fetchEndpoint         url.URL
+	listEndpoint          url.URL
+	subordinationEndpoint url.URL
 	// TODO(timg): other federation endpoints
 }
 
@@ -158,4 +168,31 @@ func (fe *FederationEndpoints) ListSubordinates(
 	}
 
 	return identifiers, nil
+}
+
+// AddSubordinate adds the provided identifiers as subordinates for the entity.
+// OIDF deliberately does not specify how this works, but I needed to invent something to enable
+// federation construction across processes.
+func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error {
+	identifiers := []string{}
+	for _, subordinate := range subordinates {
+		identifiers = append(identifiers, subordinate.String())
+	}
+
+	urlWithQueryParams := fe.subordinationEndpoint
+	urlWithQueryParams.RawQuery = url.Values(map[string][]string{
+		QueryParamSub: identifiers,
+	}).Encode()
+
+	// Empty body, no content type?
+	resp, err := fe.client.client.Post(urlWithQueryParams.String(), "", strings.NewReader(""))
+	if err != nil {
+		return fmt.Errorf("failed to POST request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+	}
+
+	return nil
 }

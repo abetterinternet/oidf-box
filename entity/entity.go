@@ -31,6 +31,8 @@ const (
 	// https://openid.net/specs/openid-federation-1_0-41.html#section-5.1.1
 	FederationFetchEndpoint = "/federation-fetch"
 	FederationListEndpoint  = "/federation-list"
+	// Subordination request endpoint
+	FederationSubordinationEndpoint = "/federation-subordination"
 	// TODO(timg) Trust mark related endpoints
 
 	// Query parameters for federation endpoints
@@ -288,8 +290,9 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 func (e *Entity) entityConfiguration() EntityStatement {
 	metadata := map[EntityTypeIdentifier]interface{}{
 		FederationEntity: FederationEntityMetadata{
-			FetchEndpoint: e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
-			ListEndpoint:  e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
+			FetchEndpoint:         e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
+			ListEndpoint:          e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
+			SubordinationEndpoint: e.Identifier.URL.JoinPath(FederationSubordinationEndpoint).String(),
 			// TODO(timg): informational metadata
 			// https://openid.net/specs/openid-federation-1_0-41.html#section-5.2.2
 		},
@@ -387,6 +390,11 @@ func (e *Entity) ServeFederationEndpoints() error {
 		})
 		mux.HandleFunc(FederationListEndpoint, func(w http.ResponseWriter, r *http.Request) {
 			if err, status := e.federationListHandler(w, r); err != nil {
+				http.Error(w, err.Error(), status)
+			}
+		})
+		mux.HandleFunc(FederationSubordinationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+			if err, status := e.federationSubordinationHandler(r); err != nil {
 				http.Error(w, err.Error(), status)
 			}
 		})
@@ -549,6 +557,34 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 	w.Header().Set("Content-Type", "application/json")
 	if _, err := w.Write([]byte(jsonIdentifiers)); err != nil {
 		return err, http.StatusInternalServerError
+	}
+
+	return nil, http.StatusOK
+}
+
+// federationSubordinationHandler implements an HTTP endpoint for OpenID Federation subordination.
+// OIDF deliberately does not define mechanisms for establishing subordination, but we need a way to
+// do this so that we can do it across processes.
+func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
+	if r.Method != http.MethodPost {
+		return fmt.Errorf("only POST is allowed"), http.StatusMethodNotAllowed
+	}
+
+	subordinates, ok := r.URL.Query()[QueryParamSub]
+	if !ok {
+		// TODO(timg): error responses confirming to https://openid.net/specs/openid-federation-1_0-41.html#section-8.9
+		return fmt.Errorf("sub query parameter is required"), http.StatusBadRequest
+	}
+
+	for _, subordinate := range subordinates {
+		subordinateIdentifier, err := NewIdentifier(subordinate)
+		if err != nil {
+			return fmt.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
+		}
+
+		if err := e.AddSubordinate(subordinateIdentifier); err != nil {
+			return fmt.Errorf("failed to add subordinate: %w", err), http.StatusInternalServerError
+		}
 	}
 
 	return nil, http.StatusOK

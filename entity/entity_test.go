@@ -166,30 +166,41 @@ func TestTrustChain(t *testing.T) {
 	}
 	defer leafEntity.CleanUp()
 
+	oidfClient := NewOIDFClient()
+
+	intermediateClient, err := oidfClient.NewFederationEndpoints(intermediate.Identifier)
+	if err != nil {
+		t.Fatalf("failed to construct federation endpoints for intermdiate: %s", err.Error())
+	}
+
+	trustAnchorClient, err := oidfClient.NewFederationEndpoints(trustAnchor.Identifier)
+	if err != nil {
+		t.Fatalf("failed to construct federation endpoints for trust anchor: %s", err.Error())
+	}
+
 	// Create subordinations
-	if err := intermediate.AddSubordinate(leafEntity.Identifier); err != nil {
+	if err := intermediateClient.AddSubordinates([]Identifier{leafEntity.Identifier}); err != nil {
 		t.Fatalf("failed to subordinate leaf entity: %s", err.Error())
 	}
 	leafEntity.AddSuperior(intermediate.Identifier)
 
-	if err := trustAnchor.AddSubordinate(intermediate.Identifier); err != nil {
+	if err := trustAnchorClient.AddSubordinates([]Identifier{intermediate.Identifier}); err != nil {
 		t.Fatalf("failed to subordinate intermediate: %s", err.Error())
 	}
 	intermediate.AddSuperior(trustAnchor.Identifier)
 
-	// Build a trust chain from leaf entity to trust anchor by fetching ECs, examining
-	// authority_hints and then getting subordinate statements
-	oidfClient := NewOIDFClient()
+	// Build a trust chain from leaf entity to trust anchor by re-fetching ECs (hence new
+	// FederationEndpoints, examining authority_hints and then getting subordinate statements
 	leafEntityClient, err := oidfClient.NewFederationEndpoints(leafEntity.Identifier)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
 	if len(leafEntityClient.Entity.AuthorityHints) != 1 ||
 		!slices.Contains(leafEntityClient.Entity.AuthorityHints, intermediate.Identifier) {
-		t.Errorf("leaf entity EC has unexpected authority hints: %+v\n %+v\n", leafEntityClient.Entity.AuthorityHints, leafEntity.superiors)
+		t.Errorf("leaf entity EC has unexpected authority hints: %+v", leafEntityClient.Entity.AuthorityHints)
 	}
 
-	intermediateClient, err := oidfClient.NewFederationEndpoints(leafEntityClient.Entity.AuthorityHints[0])
+	intermediateClient, err = oidfClient.NewFederationEndpoints(leafEntityClient.Entity.AuthorityHints[0])
 	if err != nil {
 		t.Fatalf("failed to construct federation endpoints for intermdiate: %s", err.Error())
 	}
@@ -215,12 +226,12 @@ func TestTrustChain(t *testing.T) {
 			intermediateClient.Entity.AuthorityHints)
 	}
 
-	trustAnchorClient, err := oidfClient.NewFederationEndpoints(intermediateClient.Entity.AuthorityHints[0])
+	trustAnchorClient, err = oidfClient.NewFederationEndpoints(intermediateClient.Entity.AuthorityHints[0])
 	if err != nil {
 		t.Fatalf("failed to construct federation endpoints for trust anchor: %s", err.Error())
 	}
 
-	if len(trustAnchor.entityConfiguration().AuthorityHints) != 0 {
+	if len(trustAnchorClient.Entity.AuthorityHints) != 0 {
 		t.Errorf("trust anchor EC has unexpected authority hints: %+v",
 			trustAnchor.entityConfiguration().AuthorityHints)
 	}
