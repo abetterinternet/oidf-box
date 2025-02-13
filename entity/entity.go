@@ -637,6 +637,16 @@ func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 			return fmt.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
 		}
 
+		// Refuse to subordinate yourself
+		if subordinateIdentifier == e.Identifier {
+			return fmt.Errorf("cannot subordinate self"), http.StatusBadRequest
+		}
+
+		// Refuse to subordinate own superiors
+		if slices.Contains(e.superiors, subordinateIdentifier) {
+			return fmt.Errorf("cannot subordinate own superior '%s'", subordinate), http.StatusBadRequest
+		}
+
 		if err := e.AddSubordinate(subordinateIdentifier); err != nil {
 			return fmt.Errorf("failed to add subordinate: %w", err), http.StatusInternalServerError
 		}
