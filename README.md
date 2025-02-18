@@ -12,7 +12,7 @@ You will need:
 - Clone this repository to `$WORKSPACE/oidf-box`
 - Clone [my fork of Pebble][timg-pebble] to `$WORKSPACE/pebble` and check out branch `openidfed`
 - Clone [my fork of Lego][timg-lego] to `$WORKSPACE/lego` and check out branch `openidfed-client`
-- Run `federation`: `cd $WORKSPACE/oidf-box && go run ./cmd/federation`
+- Run `federation`: `cd $WORKSPACE/oidf-box && go run ./cmd/`
 - Run Pebble: `cd $WORKSPACE/pebble && go run ./cmd/pebble -config ./test/config/pebble-config.json`
 - Run Lego: `cd $WORKSPACE/lego && go run ./cmd/openidfeddemo/`
 

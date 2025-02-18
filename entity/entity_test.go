@@ -362,3 +362,36 @@ func TestFederationList(t *testing.T) {
 		})
 	}
 }
+
+func TestChallengeSigning(t *testing.T) {
+	entity, err := NewAndServe("http://localhost:8001", EntityOptions{IsACMERequestor: true})
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	defer entity.CleanUp()
+
+	signature, err := entity.SignChallenge("token")
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	compact, err := signature.CompactSerialize()
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	client := NewOIDFClient()
+	endpoints, err := client.NewFederationEndpoints(entity.Identifier)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	entityConfiguration := entity.entityConfiguration()
+	if err := entityConfiguration.VerifyChallenge(compact, "token"); err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	if err := endpoints.Entity.VerifyChallenge(compact, "token"); err != nil {
+		t.Fatalf(err.Error())
+	}
+}

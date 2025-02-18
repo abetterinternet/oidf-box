@@ -30,11 +30,9 @@ type EntityStatement struct {
 	// TODO(timg): constraints, crit, trust marks
 }
 
-// ValidateEntityStatement validates that the provided signature is a well formed JSON web signature
-// whose payload is a well formed OpenID Federation entity statement. The JWS signature is validated
-// using one of the keys in the provided JWKS, or with a key inside the payload (in which case the
-// payload is an entity configuration).
-func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*EntityStatement, error) {
+// signatureKeyID parses the provided signature and returns the key ID from its JWS header, as well
+// as the parsed JWS.
+func signatureKeyID(signature string, expectedType string) (*string, *jose.JSONWebSignature, error) {
 	// The JWS header indicates what algorithm it's signed with, but jose requires us to provide a
 	// list of acceptable signing algorithms.
 	// TODO(timg): For now, we'll allow a variety of RSA PKCS1.5 and ECDSA algorithms but this
@@ -43,20 +41,33 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate JWS signature: %w", err)
+		return nil, nil, fmt.Errorf("failed to validate JWS signature: %w", err)
 	}
 
 	if len(jws.Signatures) > 1 {
-		return nil, fmt.Errorf("unexpected multi-signature JWS")
+		return nil, nil, fmt.Errorf("unexpected multi-signature JWS")
 	}
 
 	headerType, ok := jws.Signatures[0].Header.ExtraHeaders[jose.HeaderType]
-	if !ok || headerType != EntityStatementHeaderType {
-		return nil, fmt.Errorf("wrong or no type in JWS header: %+v", jws.Signatures[0])
+	if !ok || headerType != expectedType {
+		return nil, nil, fmt.Errorf("wrong or no type in JWS header: %+v", jws.Signatures[0])
 	}
 
 	if jws.Signatures[0].Header.KeyID == "" {
-		return nil, fmt.Errorf("JWS header must contain kid")
+		return nil, nil, fmt.Errorf("JWS header must contain kid")
+	}
+
+	return &jws.Signatures[0].Header.KeyID, jws, nil
+}
+
+// ValidateEntityStatement validates that the provided signature is a well formed JSON web signature
+// whose payload is a well formed OpenID Federation entity statement. The JWS signature is validated
+// using one of the keys in the provided JWKS, or with a key inside the payload (in which case the
+// payload is an entity configuration).
+func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*EntityStatement, error) {
+	kid, jws, err := signatureKeyID(signature, EntityStatementHeaderType)
+	if err != nil {
+		return nil, err
 	}
 
 	if keys == nil {
@@ -76,8 +87,7 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 		keys = &untrustedEntityConfiguration.FederationEntityKeys
 	}
 
-	verificationKeys := keys.Key(jws.Signatures[0].Header.KeyID)
-
+	verificationKeys := keys.Key(*kid)
 	if len(verificationKeys) != 1 {
 		return nil, fmt.Errorf("found no or multiple keys in JWKS matching header kid")
 	}
@@ -117,6 +127,36 @@ func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadat
 // EntityTypes returns the OpenID Federation entity types advertised by this entity statement.
 func (ec *EntityStatement) EntityTypes() []EntityTypeIdentifier {
 	return slices.Collect(maps.Keys(ec.Metadata))
+}
+
+// VerifyChallenge verifies if the signedChallenge is a valid JWS over the provided token, using
+// this entity statement's acme_requestor JWKS.
+func (es *EntityStatement) VerifyChallenge(signedChallenge string, token string) error {
+	kid, jws, err := signatureKeyID(signedChallenge, SignedChallengeHeaderType)
+	if err != nil {
+		return err
+	}
+
+	var acmeRequestorMetadata ACMERequestorMetadata
+	if err := es.FindMetadata(ACMERequestor, &acmeRequestorMetadata); err != nil {
+		return fmt.Errorf("entity is not an ACME requestor: %w", err)
+	}
+
+	verificationKeys := acmeRequestorMetadata.CertifiableKeys.Key(*kid)
+	if len(verificationKeys) != 1 {
+		return fmt.Errorf("found no or multiple keys in JWKS matching header kid")
+	}
+
+	challenge, err := jws.Verify(verificationKeys[0])
+	if err != nil {
+		return fmt.Errorf("failed to validate challenge signature: %w", err)
+	}
+
+	if string(challenge) != token {
+		return fmt.Errorf("requestor challenge response signed over wrong token: %s", challenge)
+	}
+
+	return nil
 }
 
 // FederationEntityMetadata is the metadata for an OpenID Federation entity

@@ -22,6 +22,7 @@ import (
 
 const (
 	EntityStatementHeaderType = "entity-statement+jwt"
+	SignedChallengeHeaderType = "signed-acme-challenge+jwt"
 
 	// https://openid.net/specs/openid-federation-1_0-41.html#name-obtaining-federation-entity
 	EntityConfigurationPath    = "/.well-known/openid-federation"
@@ -184,6 +185,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key: %w", err)
 	}
+
 	federationEntityKeys, err := privateJWKS([]interface{}{federationEntityKey})
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
@@ -300,8 +302,9 @@ func (e *Entity) entityConfiguration() EntityStatement {
 	}
 
 	if len(e.acmeRequestorKeys.Keys) > 0 {
+		publicACMERequestorKeys := publicJWKS(&e.acmeRequestorKeys)
 		metadata[ACMERequestor] = ACMERequestorMetadata{
-			CertifiableKeys: &e.acmeRequestorKeys,
+			CertifiableKeys: &publicACMERequestorKeys,
 		}
 	}
 
@@ -443,8 +446,8 @@ func (e *Entity) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 				// kid is REQUIRED by acme-openid-fed, but it doesn't say anything about typ here. I
 				// suspect we should set one to avoid token confusion.
 				// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.5-7
-				// TODO(timg): set jose.HeaderType
-				"kid": e.acmeRequestorKeys.Keys[0].KeyID,
+				jose.HeaderType: SignedChallengeHeaderType,
+				"kid":           e.acmeRequestorKeys.Keys[0].KeyID,
 			},
 		},
 	)
