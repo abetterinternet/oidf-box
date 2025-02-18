@@ -517,6 +517,12 @@ func (e *Entity) EvaluateTrust(otherEntity Identifier) ([]EntityStatement, error
 	return trustChain, nil
 }
 
+// EvaluateTrustChain parses the provided strings as a chain of entity statements and evaluates
+// whether this entity trusts the leaf entity.
+func (e *Entity) EvaluateTrustChain(entityStatements []string) ([]EntityStatement, error) {
+	panic("not implemented")
+}
+
 func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Request) (error, int) {
 	if r.Method != http.MethodGet {
 		return fmt.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
