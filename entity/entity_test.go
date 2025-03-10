@@ -63,8 +63,9 @@ func TestIdentifier(t *testing.T) {
 
 func TestACMERequestor(t *testing.T) {
 	entity, err := New("https://example.com", EntityOptions{
-		IsACMERequestor: true,
-		TrustAnchors:    []string{"https://example.com/trust-anchor"},
+		ACMERequestor:        &ACMERequestorOptions{Keys: TestJSONWebKeySet(0)},
+		TrustAnchors:         []string{"https://example.com/trust-anchor"},
+		FederationEntityKeys: TestJSONWebKeySet(1),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct entity: %s", err.Error())
@@ -103,8 +104,9 @@ func TestACMERequestor(t *testing.T) {
 
 func TestACMEIssuer(t *testing.T) {
 	entity, err := New("https://example.com", EntityOptions{
-		ACMEIssuer:   "https://example.com/acme",
-		TrustAnchors: []string{"https://example.com/trust-anchor"},
+		ACMEIssuer:           &ACMEIssuerOptions{DirectoryURL: "https://example.com/acme"},
+		TrustAnchors:         []string{"https://example.com/trust-anchor"},
+		FederationEntityKeys: TestJSONWebKeySet(0),
 	})
 
 	if err != nil {
@@ -143,14 +145,17 @@ func TestACMEIssuer(t *testing.T) {
 func TestTrustChain(t *testing.T) {
 	// Construct entities for trust chain of length 3
 	// TODO(timg): this is brittle as these ports may already be bound
-	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{})
+	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{
+		FederationEntityKeys: TestJSONWebKeySet(0),
+	})
 	if err != nil {
 		t.Fatalf("failed to construct trust anchor: %s", err.Error())
 	}
 	defer trustAnchor.CleanUp()
 
 	intermediate, err := NewAndServe("http://localhost:8002", EntityOptions{
-		TrustAnchors: []string{"http://localhost:8001"},
+		TrustAnchors:         []string{"http://localhost:8001"},
+		FederationEntityKeys: TestJSONWebKeySet(1),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct intermediate: %s", err.Error())
@@ -158,7 +163,8 @@ func TestTrustChain(t *testing.T) {
 	defer intermediate.CleanUp()
 
 	leafEntity, err := NewAndServe("http://localhost:8003", EntityOptions{
-		TrustAnchors: []string{"http://localhost:8001"},
+		TrustAnchors:         []string{"http://localhost:8001"},
+		FederationEntityKeys: TestJSONWebKeySet(2),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
@@ -201,7 +207,9 @@ func TestTrustChain(t *testing.T) {
 
 	// Construct an unrelated entity untrusted by anybody, and it shouldn't be possible to construct
 	// a chain for it
-	untrustedEntity, err := NewAndServe("http://localhost:8004", EntityOptions{})
+	untrustedEntity, err := NewAndServe("http://localhost:8004", EntityOptions{
+		FederationEntityKeys: TestJSONWebKeySet(0),
+	})
 	if err != nil {
 		t.Fatalf("failed to construct entity")
 	}
@@ -213,14 +221,17 @@ func TestTrustChain(t *testing.T) {
 }
 
 func TestFederationList(t *testing.T) {
-	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{})
+	trustAnchor, err := NewAndServe("http://localhost:8001", EntityOptions{
+		FederationEntityKeys: TestJSONWebKeySet(1),
+	})
 	if err != nil {
 		t.Fatalf("failed to construct trust anchor: %s", err.Error())
 	}
 	defer trustAnchor.CleanUp()
 
 	intermediate, err := NewAndServe("http://localhost:8002", EntityOptions{
-		TrustAnchors: []string{"http://localhost:8001"},
+		TrustAnchors:         []string{"http://localhost:8001"},
+		FederationEntityKeys: TestJSONWebKeySet(2),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct intermediate: %s", err.Error())
@@ -228,7 +239,8 @@ func TestFederationList(t *testing.T) {
 	defer intermediate.CleanUp()
 
 	leafEntity, err := NewAndServe("http://localhost:8005", EntityOptions{
-		TrustAnchors: []string{"http://localhost:8001"},
+		TrustAnchors:         []string{"http://localhost:8001"},
+		FederationEntityKeys: TestJSONWebKeySet(3),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity")
@@ -236,8 +248,9 @@ func TestFederationList(t *testing.T) {
 	defer leafEntity.CleanUp()
 
 	acmeRequestor, err := NewAndServe("http://localhost:8003", EntityOptions{
-		TrustAnchors:    []string{"http://localhost:8001"},
-		IsACMERequestor: true,
+		TrustAnchors:         []string{"http://localhost:8001"},
+		FederationEntityKeys: TestJSONWebKeySet(4),
+		ACMERequestor:        &ACMERequestorOptions{Keys: TestJSONWebKeySet(5)},
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
@@ -245,8 +258,9 @@ func TestFederationList(t *testing.T) {
 	defer acmeRequestor.CleanUp()
 
 	acmeIssuer, err := NewAndServe("http://localhost:8004", EntityOptions{
-		TrustAnchors: []string{"http://localhost:8001"},
-		ACMEIssuer:   "http://example.com",
+		TrustAnchors:         []string{"http://localhost:8001"},
+		ACMEIssuer:           &ACMEIssuerOptions{DirectoryURL: "http://example.com"},
+		FederationEntityKeys: TestJSONWebKeySet(6),
 	})
 	if err != nil {
 		t.Fatalf("failed to construct leaf entity: %s", err.Error())
@@ -363,7 +377,10 @@ func TestFederationList(t *testing.T) {
 }
 
 func TestChallengeSigning(t *testing.T) {
-	entity, err := NewAndServe("http://localhost:8001", EntityOptions{IsACMERequestor: true})
+	entity, err := NewAndServe("http://localhost:8001", EntityOptions{
+		FederationEntityKeys: TestJSONWebKeySet(0),
+		ACMERequestor:        &ACMERequestorOptions{Keys: TestJSONWebKeySet(1)},
+	})
 	if err != nil {
 		t.Fatalf(err.Error())
 	}

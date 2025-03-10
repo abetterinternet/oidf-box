@@ -122,12 +122,27 @@ func (i *Identifier) UnmarshalJSON(b []byte) error {
 
 // EntityOptions are options for constructing an Entity.
 type EntityOptions struct {
-	// If true, metadata for the acme_requestor entity type will be constructed and advertised.
-	IsACMERequestor bool
-	// If set, the entity will advertise acme_issuer metadata using the provided URL.
-	ACMEIssuer string
-	// Trust anchors trusted by this entity.
+	// ACMEIssuer configures the entity as an acme_issuer. If nil, entity is not an issuer.
+	ACMEIssuer *ACMEIssuerOptions
+	// ACMERequestor configures the entity as an acme_requestor. If nil, entity is not a requestor.
+	ACMERequestor *ACMERequestorOptions
+	// TrustAnchors is the identifiers of the trust anchors trusted by this entity.
 	TrustAnchors []string
+	// FederationEntityKeys used for signing entity statements. The JWKs must contain private keys.
+	FederationEntityKeys *jose.JSONWebKeySet
+}
+
+// ACMEIssuerOptions configures the entity to be an ACME issuer.
+type ACMEIssuerOptions struct {
+	// DirectoryURL is where the issuer's ACME directory may be found.
+	DirectoryURL string
+}
+
+// ACMERequestorOptions configures the entity to be an ACME requestor.
+type ACMERequestorOptions struct {
+	// Keys are the keys that will be advertised in the entity's metadata and will be used to sign
+	// challenges. The JWKs must contain private keys.
+	Keys *jose.JSONWebKeySet
 }
 
 // Entity represents an OpenID Federation Entity.
@@ -181,15 +196,25 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 		trustAnchors = append(trustAnchors, parsedTrustAnchor)
 	}
 
-	// Generate the federation entity keys. Hard code a single 2048 bit RSA key for now.
-	federationEntityKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, errors.Errorf("failed to generate key: %w", err)
-	}
+	var federationEntityKeys jose.JSONWebKeySet
+	if options.FederationEntityKeys == nil {
+		// Generate the federation entity keys. Hard code one P-256 key and one 2048 bit RSA key.
+		ecFederationEntityKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, errors.Errorf("failed to generate key %w", err)
+		}
 
-	federationEntityKeys, err := privateJWKS([]interface{}{federationEntityKey})
-	if err != nil {
-		return nil, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
+		rsaFederationEntityKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return nil, errors.Errorf("failed to generate key: %w", err)
+		}
+
+		federationEntityKeys, err = privateJWKS([]interface{}{ecFederationEntityKey, rsaFederationEntityKey})
+		if err != nil {
+			return nil, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
+		}
+	} else {
+		federationEntityKeys = *options.FederationEntityKeys
 	}
 
 	entity := Entity{
@@ -201,28 +226,33 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 		superiors:            []Identifier{},
 	}
 
-	if options.IsACMERequestor {
-		// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
-		rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			return nil, errors.Errorf("failed to generate RSA key to certify: %w", err)
-		}
+	if options.ACMERequestor != nil {
+		if options.ACMERequestor.Keys == nil {
+			// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
+			rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			if err != nil {
+				return nil, errors.Errorf("failed to generate RSA key to certify: %w", err)
+			}
 
-		ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
-		}
+			ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
+			}
 
-		acmeRequestorKeys, err := privateJWKS([]interface{}{rsaACMERequestorKey, ecACMERequestorKey})
-		if err != nil {
-			return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
-		}
+			acmeRequestorKeys, err := privateJWKS([]interface{}{rsaACMERequestorKey, ecACMERequestorKey})
+			if err != nil {
+				return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
+			}
 
-		entity.acmeRequestorKeys = acmeRequestorKeys
+			entity.acmeRequestorKeys = acmeRequestorKeys
+
+		} else {
+			entity.acmeRequestorKeys = *options.ACMERequestor.Keys
+		}
 	}
 
-	if options.ACMEIssuer != "" {
-		url, err := url.Parse(options.ACMEIssuer)
+	if options.ACMEIssuer != nil {
+		url, err := url.Parse(options.ACMEIssuer.DirectoryURL)
 		if err != nil {
 			return nil, errors.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
 		}
@@ -264,9 +294,8 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 
 	entityConfigurationSigner, err := jose.NewSigner(
 		jose.SigningKey{
-			// TODO(timg): don't hard code algorithm, but it's annoying to go from jose.JSONWebKey
-			// to jose.Algorithm for some reason
-			Algorithm: jose.RS256,
+			// TODO: probably should validate that the Algorithm field is valid somehow
+			Algorithm: jose.SignatureAlgorithm(e.federationEntityKeys.Keys[0].Algorithm),
 			Key:       e.federationEntityKeys.Keys[0].Key,
 		},
 		&jose.SignerOptions{
@@ -436,10 +465,8 @@ func (e *Entity) CleanUp() {
 func (e *Entity) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 	challengeSigner, err := jose.NewSigner(
 		jose.SigningKey{
-			// TODO(timg): here we hard code the use of the first acme_requestor key, and assume it
-			// is RS256. We could do something like randomly choose a key among that JWKS, but it's
-			// annoying to go from jose.JSONWebKey to jose.Algorithm for some reason
-			Algorithm: jose.RS256,
+			// TODO: probably should validate that the Algorithm field is valid somehow
+			Algorithm: jose.SignatureAlgorithm(e.acmeRequestorKeys.Keys[0].Algorithm),
 			Key:       e.acmeRequestorKeys.Keys[0].Key,
 		},
 		&jose.SignerOptions{
@@ -706,4 +733,205 @@ func publicJWKS(jwks *jose.JSONWebKeySet) jose.JSONWebKeySet {
 	}
 
 	return publicJWKS
+}
+
+// TestJSONWebKeySet constructs a JWKS suitable for use as a federation entity's keys or as ACME
+// requestor keys. This avoids expensive key generation in unit tests. Callers should make sure to
+// use a different set of keys for different entities or entity types.
+func TestJSONWebKeySet(index int) *jose.JSONWebKeySet {
+	var jsonKeys = []string{`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "pKIew4-gcTKMBm8L4h-pEvpoLsJ1ZtvHevAV4mWnjxQ=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "G25LB67PwoeUV6ZsKT6zxxYT60lVklzKLCMTBhR_YLY",
+            "y": "YZtJ9e_3kjzfRZ9JFyyGlJNn0CKe9HCsPC2QUT4Z52U",
+            "d": "dYHV1YPwvTih1k7D5Tbii6f8asd_TtuSaFDPs6v1VGU"
+        },
+        {
+            "kty": "RSA",
+            "kid": "9z-eVGazRZk_Aa0MaRUY9Bv1hcgtCYBYkWwkmv3sZsw=",
+            "alg": "RS256",
+            "n": "vCHAMKZ7rTrnIxS7qgumkV8TO74DfuDPj0suM9VqqZ5u-jbJeQuXStpWI341MMNJYFoZQsSC38yurBck0N7tbgfpvPQDFVzzl5BYJiejZFFlxTrs6R4XluCOZF1k-p1Dqn5NJQKh28NPIP29gk5cOG1zLrPsVwZYINyBoSRXQn9_nLCOIS3itKGayEzGtXMdyUWzD_M78dMdntrPxL1CdPNAe9_8ZTmvd9bNkCwtTtwy0pglhasdLr8k9RvC1kAdy6uEQtTDY-I_wHhPe20U1R5KCCUeYZ3UAhrAmjHCXcfGhEVn221a3bo8td4TLt9vImCvT2LuAumRgg7QDsassQ",
+            "e": "AQAB",
+            "d": "qU8mi6IIg-oSwbuS-IHrscCCqq1ir_jaUvcx6WwTxfrTnVNZFhqcWb0M8HxQmkXl71SmjzQTJB4sxKs_csptmyx76pUfgUZZ4vkAm7Xokgu_LzTMqS9vw1TsUN7MVc7aasGn47rut7yZpfM1bePfktjNZCaAeAE5prlL4B24ehp90SYAPzWc74brrm_lClNQ2sTwSZfvrx1vE5S1hx_75M2bJnkl0M_ZNnw2UGO4WCFZW0HbnkAtUZGpLI_GCn2zM1vxCvugTAxKywPWIR-5iCvdgHZOPVGnjKpkSxj6FB3BH8HxBRg_fOBzhWDcyG6YLZpTb8U2i84hZisi66FTEQ",
+            "p": "wAZm9CmE9fM-wWSwCXGflZ4jedYBDRE1M0My_9UQxbzGbDNDN_HunbG2U0XtafXXBr7ajW1brtYvtcUgpoByAHfEaeUWQjjhoOydD-ulgqaJl83jUFNQ-tLI3N9foT2YthglqL24uWy8UCTFEHLxVXWvcTklqkVHZYM990G2rb8",
+            "q": "-s9N9ASWGp7Rwoj6C0MPkpgJXZIthS_nRujTTH2ZnoCKlU_eSiUs2eBI8dLSXryVN3svi2uc-IVklz-042Dq9mpSEUGCzObR7BLDpgtV6La1c2BZhttPGgVq2gkQpOoer8M3Bn6hkJh0oAcoCWDIgmICIHDvQ-jywpubqbQqIY8",
+            "dp": "Hi6jbgs8n9_85C7sUH-wgrbZgqP1hFVJFGailH2r5ji2w3kHPrrjM5wkOVCLcZU3mBLVjVc8Cu4Vj6-NYz5bLOGmWLKuXfhM1pt6UG9Mk42ToO22pgCCgPoyoizl_hUNdMm02aIAb_y8WKh-5Qf8EN-vlM9TsUC0aStIyR1mFkc",
+            "dq": "2oCWEhuYxbJNXeRFqmAPBhBsQFekTp8QJweZZc8acSrdEP2W1BOVAm9SPVMEsUIr4Tzxi84B38UegGIg7eK2cFzqCFyBXo9MnRUv282OV4ItjEmJVWJkhG_pyfARzwqkF03D92WEzdrz56K0b48gv-4wmiCpYglkzMQSFgN-nOM",
+            "qi": "su3T07r2hCEkEAPVp8gOqO_1eZEMmQWSrZjfHbSsX1FgJNj8twjTAgO71jEq09-aVydopeuX1eihAWwT1ln8VN3eBXD0BrP6jYb6KiAMUmuPbEfRW-pQ2deMJQs_nkS1CbLujfns7M6DqPXn3cK39MjbjGUA7Qau4jeqxcFBX74"
+        }
+    ]
+}`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "3F8xmHuj_mI491j5NaCOGH9xKUKu96T0J9KzLn2uZmc=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "J-YFKLKqdNcAt5sy7qtp8Bnbpvy3Hi7Sh5ACOVz1lz8",
+            "y": "Br1SrcZtR6CtCBU_qGnhgo4FJ5F99eYG3wzvabYjAQk",
+            "d": "U01VEA2k6xKI6PO4f-lm2-7wGNlAsIGOS3KCxJTKXwQ"
+        },
+        {
+            "kty": "RSA",
+            "kid": "s1GDQoJwRUi9sG8y0ZkPacairjzmxuZl1AzjacmL2xg=",
+            "alg": "RS256",
+            "n": "pAgDP5OIbNZPt1YR-3pFhfIbd3kvSbncFL-3Mfmtdng5b9_nmavL0ZU9Li3VaG1OJFkSXLEd2k3o9tq-3s1H-yVrgLJnl6w1AQ-_jNHMHiMZl78vZ9Vl3P4wriCERrS49vANGcKhnGI-j17PUDuNvCUb5ZojzqywUBAG0_9YbgAJ5C-XM8G3hfLyM9vmv31c8J8o19pV6GvBiNHyLgYR8sd1Hk2WciOh8aK6z59-tkFN_y8FryhM5TLoXlX0_wcQPpBPuztk4f4EGJy-ipHFYGdiVlwiID6dtodf_6FmKsovrolDqPmdnsfcmZD5rnVmWO_6rzktUtT87CuhW3csNQ",
+            "e": "AQAB",
+            "d": "ayIgnQGK9Sr0XdYFYK53ggijD-FClXCi4Zpl2GoudVYIjZ078w5VzMkgcGzXGaFqjCrw50F3MgH4ymIMkBCbltjV4fSj3FhJNixG-357RqO-L3JbUAH8yd3rhY8PVe7rb71RkSWh0DYKjjFqTgjXha7nDYsjH_WCIoiVLRl1dEHehYdmDndbyVGusF9-859r8Fibf-w_lrR6VZ8e-tw59ynOflUX-BW1X52pHlzZ9K_paqQNvrdji4oDf4P9q5qAbgrFspB4l6VhT7kXvdym_QbRos31ypEIuoCAi6SsG7YFKdhjg7dzlTz9NuCWFMRxPGHYT4WDPOzWwy7QptraAQ",
+            "p": "zJOoiYt1pPjo8QRxB0P_p12F-e6SKFP4I4CzJyzOwQuZdvlTjzMi7WkENxq8qNx1EQOI0hDirVwZ0afF6pCvI1Eu15MVtZ7pYzr_Ri8jz2Ga_uYX9oRJ1ZVPN3OQ9BvQNvyJlv7ZtdKeLjkhEBsrgO9N1zku-bE4UPdTB675LaE",
+            "q": "zUNJYeEO1wzmEn5BLeIhZJ7dfwzVQUA35jgBY1WlJD4RwPLWJ2pdeEmivpS4xt2jY5p3GE44BXpUBE6k6x5FrAt7C2s23cqj8gGCWDwcql1a7f2nU95TWoRx0YnO5eQwfJuGl5BXgbbFsTlukSXZirESqwxorld5YxxbggcjrhU",
+            "dp": "Uds3UanirdsG4gFj9INJ1T7_r6y9ALPwkswZYzBznhy1EDzdKWxNqm8dx6rEGFD16pPeeCdXfARhNFmMQLoZyeje9FUfF6f5PMJLiFquWnl0mk-ZAQOXw4VVyBtOwc4rNwU_TJK2rCEVN-uWBirI8nNOUzLHUBOQNB1yNJ3XiGE",
+            "dq": "vOnptvDotJoFgg27NVyC-VWRa-ZGu2g8SmFPPbpMZD_QHTIiUWJ-pj-3TgoYycahIwG-DJuoybnda51qAY759q8WTtsdQyHGo-wpp8WjaFTFZHZoszLSqmNtUbmwtzq-OWD2jbXmI9cwubyu-13HivMPyGeCTLrrWIF34wNpHkU",
+            "qi": "l7ESaK0DOM_d4B9FsbcpgHVOQd26dmw3TWFswet7Ka-Ofy6r2EKN-fkYsVUPLoMdPtqaQ3B4TL44rBvyN_nBSIn9pnDeRObIDyLXpHTx86--apwsoHdrsBzeRQpdVXEj-s64UlYnDbwt8qjIHCTj18nOSirpVhutLuxT4zWog4M"
+        }
+    ]
+}
+`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "9CcbN34jvYy3kYn-x_n5P7oS9GWcK1Qe95G95vW7obI=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "q71BHRpuIuMPNwUtkhdh-vLUhAbOuk0wmc1TnDfK_EI",
+            "y": "OlDzW6tuiPXwCxyS4rJCcQnOCgTHSuPJXzeH0GawF6c",
+            "d": "Uc2f9TCR6PKhCPiS2pph3eaxNp5Ba_NUboIFAoTfOzM"
+        },
+        {
+            "kty": "RSA",
+            "kid": "9BDFaa355XTZlJrCzWfugUWnVcfHp-uo35Xxqvpcfy4=",
+            "alg": "RS256",
+            "n": "vFKZSILO8WFaweQdn661-sfj1nkz8zaCimr57fOLTp7jQb1QTciSUirurPZptg6DFUe_C1GI7iQGeAjp4hfnJba9oqhWfowyw-MJf2jA4oRfhqQvcVTKq0T7luZIPkecRyIRPiakkTxsRaQsM_Jg8D-FEt6QPhrHO3boP8844KK_UQ1bSSK2l0756rtzjpuD5il-EzvVxR6RHuTUIuKmwzW6LrQecRvIEnG21_kBtd6zHYwE825qyvAdwg_4yn3hQZl0xpg8g2GmitGLPgNZW4DFq-V7rsdgYN8jIB9yepg_vHYS7esH-S3iuDRTgdnzhdocEOVMNczy2BUpjQ_Buw",
+            "e": "AQAB",
+            "d": "ROvx32DIPf0ESyuiT9uQDFz1nHu1MJDFi8UE_ToBxN9PirKvXhhGvL2rpi90lsWO4c3lNE49z_HtUCbq-e0HknzjwFDdfujud1RzGGcNGJmboFocZtzCY5YWga57yBdLMZldOCLKXcEAWyhvaP-OzL5ihHphzejc-31UGG5NgaBNGv3rYEBZYBewMgk7EMtyXZQbruewr_yQhb0hHA1xR0B11CekSdC37q8KhSYdiAD0_LIDKKcH6kMwYMZzftRdlcOpX1R3UeOoQTTz_3AMdSOXyW6L78F6uLCHxvCdN9ryCD5bdkcu1xeaiUkSe2P2G48qKUj9rMf81r_l9IFVyQ",
+            "p": "7v74kkSBUfJT7uG6lm6ZYZkOpIFjQe5iCE0I0QhV2ek3QqtKBY56DpxaP9C7vXo6WmT6AjerEX1SoVI1z6ye5xd5PKgxlzg26o94qwcQxZ41zD0IOrUChnIu2lOpsSDhr7u2psrqV-yipSW1_sC9pFeQ-HsZorn_an6DmZst8Kc",
+            "q": "ybisTMzKXIRv3BYKqSq9gLInrSsh6xjHx1oDIauSy4q_TRoCnU3zuvu43W_aQ5obQiEVbCAkz8uiWKZMeBtoLbRoMCVXIWDH2t81xOBE1m9jPFKWSGloWd8y68lDtNCff6Y70sPHac4JPkRmng3LNT0xhZqxZ_OljenahIffFM0",
+            "dp": "F202wF-mrXmrcIb_2y8MKdzu6oEkUZokUdv7OUIv6CRMHmTb5J-Kp1P8JLU5MeGBRssPFpiOVDCMoPOGAs1Q5iYO5Ds4YTJJb8SQd3NB2Z0geNyiqd6EWNlobk41G_-1H5yu0rqhLe0sJDQGGuqZrDpJI5IteR3yQ2YTUEM9xZE",
+            "dq": "CM_vfv9nS7lhZZz05EUAuFGQGCmNNscDWzscbekf5ZJvHwAm4xZXsnByuAG96DwgOrhVRj71PLqpofPJ3WldGLoL3yaSctvWf0JHCA3AFBoTnLwC4rDwJRTyFYjaU1jVzu7FKETzPjUJBFZaoUb6_J1qv2ptm5vyPIvdxvJklXU",
+            "qi": "53T2E3j_iXj6Bs_HI2Q4epyShRrLwNYPZ_WSjKXVwTJdgm0LxeG7BbecJhBWtAi0i5CStNnIhVWxaqZIX9pwE9u4aLW3P7gynRAYbZ1nTFuR3C2Dxyg6kChvcTg8BC_Bhnehr8C3csE8Su4xgHcs_ePtpOEia-i7ofchxiTHzA0"
+        }
+    ]
+}
+`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "6wkqtC2mvHTzmS5Fv-TN4z2on8lfl9yE__DHf3eOuwg=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "MF7LAIjt8tjoMDfnVh3fucnRDORGLvUNq6sOr1iiDMg",
+            "y": "7NIpVdEm5M353OmLsyTjbz-Y6s3jiVB-0hnzTc9Kz04",
+            "d": "Hx2nz4hMJiU9wlbzlHrUMcAxm-w6JI5mlU7OcPyY_zE"
+        },
+        {
+            "kty": "RSA",
+            "kid": "VU3zt0xwP0XMp7GQOlY_0Mf1UR3u5sKVB9sEEweLYrU=",
+            "alg": "RS256",
+            "n": "8YFfParrDe-kiPHyORx7XEKrSA_LrZQpY-eWs_mq9es3bYUyoBV-HbqX1C1rk8X82HSmwLuZ9nofiCv7haero3votaElcxRFCMq7eV20xpVrn1KnoNKHwphW4fMblHHoCQOo75Z6FUUQz18weKblDpUoecLqxv2xfdm_vIQz3NN9qHGFxxrJbjnmbeVcyEgoHSCOGPLHFzdFWJkVqeKqtH_dfOWxaCN_jJuJulpHZpQa3RDrE4KtcBl8GaD4O0eta_t1Ntj7J92Kxt3TYSGgvI2Pl-dJ3ShFhSyDuZahIOd9B9VfrXaSvCXzzbHLq7eZujU-8Pmh6-4gC1GNSlXRiQ",
+            "e": "AQAB",
+            "d": "yvLvOIGDmmiCmlrINVpMCJI2Ig60GSBjUAN0T7ZGBvct0ymWC5VEMHN31-R7fOlqu_P7lgeRMOIb0XE0o3Lt-CrOuqO7NuQXx3Wm6iznF-LFWFQ7bhi94bfne2WzDaJTXg_nTb_kxC8QG1RhBWMrJoAOTZSRe7wCBkKQsDlg4_ZsseHuv3YQnCaSZryPnc_zyE3tTRM_FAPxudhrIQ8tYv4hk9Wue5bNofADrbElNEaE2E4iOK5IRDUS4e9ZfqJ21DHaSAbkXB8Ub-4T2AA_45mzlgLwUwDbtCBkpQmkJT-lasFtJCQuMd0V2CFPpEssVgwMN9ATnl0h_YjqgkhZCQ",
+            "p": "_MhZBiNTGc4hCBLD7ni78TBi2IBb_nxKSvt4D17gjl0yNvgD8gq4xbZkoeSWP8A0CQCBk-k26kd5KwdB63ZzOasqu-PTH-8Yt7YZx1U_sZffp8_hxUmPy7s4Zzi_4y8-QLkd6u8EqmO7OKdIzuovtw3X1WBFyETW7OQj_QHTahs",
+            "q": "9JRHdkWJas1BI4j6E6rVNpRg3cCsXpvlp0peKea-QLyCFv-jKVSsEOCSj_lxM9R4EX7DHFeKQkTCwWXOmiuCxl5tKiOO8SNtLtiQyWh8QghFV1nYZmZtZF_QY-m4t8HztRibSbGGnmszCV2nggY6kBYJkLRagz-KsuwTTPFI7Ss",
+            "dp": "VXwfdw7tJHXr_8Hw1q2nyUn2s4a9FZPMwAzIrlIEmMB1odc_5lOv5tTmtUULdqW2MzEjoPSmaJYhKOb8aPeWwfLbscy68jq2XjJMB3gR4SoeLa8Eh-Z3pYs76NRtOBQa9mJj9rY8Gq89ekxAOBFEb6BT1EoJb0-wa04_yWkbqO8",
+            "dq": "G5zOAJ1TKVqo-wEQ8r17uuC_mumQzFGfeOadgO-LFTXzHfOYkSb9Eh64jUalMCvRrm_4SS_c7SRkNH9w9tjot8qbWoGPNsxAHGTY29RPCwlyAq2jD9SKjyV-GnmdoClmgVCY35YKU8JYjbskGTroy7GhPNQPz_eRiie6-hnXmOc",
+            "qi": "tI69QKe3R5a4KzNP0AXyFKKO-3nzee-AN1Rk4dT_1KoEib7t3gyDT1WFf370AlN1BSqlYILaSl0RnA8l4Em_ZcWHTDEXZZR60nbnpWwVlOvNKFrIt4wrdhwGe4wlIbCXYcwtN71qKFCjXUUD1Jpo4SS8srBHD8XstUKNxtToGOE"
+        }
+    ]
+}
+`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "5uUmKEKYrNKIcbbVD5z05R41Cgdf6A5ghtK-_8hobF8=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "DnWamXS0GSrkMldIIT32pjcEPARNph7DbBie4S8H6BI",
+            "y": "m3VoJDC--oADdoreQGT0LaFuSYFpHkuKM52O9OhsiwQ",
+            "d": "5WMJAg4clVI-bHkCynkI-m79jM_DYyy89KTA65y-72Q"
+        },
+        {
+            "kty": "RSA",
+            "kid": "g398BL5JCy5eGF-7BxH8U9aHD18dRcT6dWGDO9AKuCE=",
+            "alg": "RS256",
+            "n": "9CtUevmbqhSiaWRDdOS9rJBgezHMCPmU0yAlW_gH-ObqeJc-cRezWQbyFWC2GKJZaToUbMcuTLbSuKuX_mLwD71FwkB-XRGlWqee_q4F9cRXMerdJBW32OIQHNDuqDbfmepbmXoHhBlt2TyJ951LdO6FdlG6XzvDnk0so_FXclLQOQEtCVPGcipIfohn38jBpttoYJ5wpSGyue_uW-EQZJTN9tX3Ol8M96etgpKdRuxqO6REQO09i-JuCDyFAK0Zv5wkI55076cP8rrpoaeyN1Auq4mV2UEui2lzGteqNd3FrdlhGJAoxXzPNlv2--vQyE4v3iOCYih0yOSuCHQkfw",
+            "e": "AQAB",
+            "d": "wrywMyhSw5KTefTybA9nS3MW0AqGTX4o-T3BLhmi2hvpU2Zk8bPSYaXNe8lXUkxhfTBKS_uL7Lk_VPPeVJA6IIN3WJcxcS76r1PS1hKbRElktbY4y2fa6kpaSXFFdrnVGh-1ELInvm69kq3a57b3EHqPzS8fsoaq3N12RgbdFJpzE0rrlACPqqXT94lFSestXl44L6ida6X4lMJb_vbTsfX_0HCqp25YmFtklLl8qKaHuz8Q4eufWu-4mTbH5wGK15sQt-IMxND3rrqrZQ-isNREpm8J75u3dip9sIxf17u_t7xoH4kX7kdII_HdWkH48ozWFt7tH-WkQN7niQ718Q",
+            "p": "-U8I34w6vrPz8CGsWCa9e0XY5pWDW2Bl8YMSVx93ly_adNmHIW1I-AjFUDZT_uidHolYadC44jqGlbLJL6PAt-oGOn2IJji5rdAsZFQI0_K-sLBkOdvcBuej_TjfiBtX07aPtEOzkkr1q6v2kP1ErLTAvymS78aIlzVRhaRLSUk",
+            "q": "-rj7lbYMSvfnvkNqKRFVVQ4HhkP_aRPMVRzannknlzmqlVhBOpEWxG9x8Se3iDweIVtJ944w34FNaKajdUSVlcxyZchCguQObQsymq2iv5sQCF4_kzuw8nDolTfe1F78YA9VyHR83nV6LqhJdxPUQgYEJgfqFrXr7TynY2tDh4c",
+            "dp": "NhQ20IcSlxth5sznHZgJshvMmPgFrmSSuHi-GbfxsRHoSUCGV3HlSihc5LFkNv8uVdllHE7yS-B2ITLPAU58F2jkQPvJ9MCJRnLJrlmsMI2PX7RjiUlvyO-mWt9jXZrQylPniCrHYQxxjfOXYIwPwYbT6KOUA_8E0gf2zw58ZkE",
+            "dq": "PgOXJtaaf8iFp4fhMDs7UghgUBNtjz34Ymz6ngv1gPAgg0QLDkNo0DmIg0-Bk87a3QFJcFPZPs8qqGHfOFg4b47cFNTNrrZd4xbL83pTMPVXp9o3-2DeSXkn7hCdqwW7gr8IRsaZRCTmjbfORAfBjnsSd52phuiEbG9-L5cOYu0",
+            "qi": "R8A_d0ytnce5LdVFEA-Arl_koTiUKEHS-9UOdbndMEGIAldHMtruu2NQ63DRsu5PmcfqCTYNu-DUB8tZDkjgeDbxEwaSBCX9ZmKUgXZ4tcuEA0qkpLIP8VpF-5393QuH1vbD98-gekdPcO5ANhNl7i0RhWjy5I_RMyelewV4DOM"
+        }
+    ]
+}
+`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "My3sbzsT3FUiHsL4QuTLD-kOERLmQXPnAPyhBiz-Lfk=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "M0ACS-CI0J52Xy4ireeAVj30aEQdnzDR6nHgduLxqEU",
+            "y": "VdtWcWTmsjfwT7dbuK6w7_P8aJal8q_-RmZS7KhGreI",
+            "d": "zDu2rT4cJTvpKNSrJwudw6rh1Whh0yG9oj1SOm95ATI"
+        },
+        {
+            "kty": "RSA",
+            "kid": "ctP6aYnWuKy3TxIwKQFs77ervz4EO7bkhoF64lwc_XA=",
+            "alg": "RS256",
+            "n": "yWZe4-HQO5kY6Td9K_D8fRY2wF_mCKSc_xXkyuZg-om4T47DsjdLotE5c4b6mJBMnpELQJJiI9tCHuBp8jvQ_KcZwMWMJmSxBLcIEKw94feGvUAe3xYmMbsZi_VoC_mlaCcmiff6z-Lg6s7E7hLos3pb2Mt3l5E1rY2GDyFBrRQeXOXUSQNTJeVm5z79RAtY43T7noKeaEqOZMH6N6Gq5ZQCfrnUih5NYIbT38bkc-tJPZfH95fHAXSbnv-GUMdtwMKvxyjulHkSVxnFzgsRRqKRiMmQhv2NF36kQP3SYx4IIrMl_6Ls-FeKygra-3MjVQDS8sOlSslFud63-IjkzQ",
+            "e": "AQAB",
+            "d": "uBR-dLFH_8E-OKPEH-6jCL3OC2VbvtieurRLK30IdNZ-BRGLIxBRbJ7pcQOVdu6laWVPMJTbaMSWGdyqWYJ80QD2k_C72be86H9Wus6DvU7d84pw7Ry0ik3l2rvSfueOXLU0D3T95RcM1vFoo-XalXkoC-5k_770ng2104xlGAikjpmPL0R4nQsxo3N4fXEolq_zCCAJ8At1kB_qR9UjFiG_oXf_CdFLBPpBgCxAW6TRkT3ip8c_lqUP_yv5p9khfwZmxfGOWDT_HGY0jOh4pGp75PQ39Ti_lvkweyL8yvehq8_VoD5KFESAHnozWNSk6Rs2jCfhaCD4DCj7zNtGAQ",
+            "p": "1QePjm5isW-ayIVxUJE2ByP1HtHXWgX5ktr9xMztE885OMG_kkI_TBSjWk6cAuYi_R8-yM222JCaJQqIW8oO6HjhoKXWfsMu6s4V2XW4rje3iCjugC6JNnq3F0zqbtu87ZA_KVoBbL67WUU1D8VlZh6FSMszOd_4CmNxK-wAxE0",
+            "q": "8gZG6ObA4-WelN2xmuYekQM218tt6LmqSJlujZWvNtVfmwRYksxjn56UXt4ICQFGTYDCye58uD3zWtjG139JEbKI1DyiSjxH3vP1odLdx8yBBXzdgBAbHeFHk5FXoKbYSnHC4Lwpil5T0y04-G98-xfSiF3Wqg-2fYl1009C4oE",
+            "dp": "mXG2v9tXD4PaM_Gaq3PNPNtzpl10Bw4itNs0y1roscoj53P3b3x0Z3K-L0BMM_Jc5YJqEO3MdLXDskah7avfjSf1LWgG1ov08YC8UETxX9wWQOdq072xbCJ8WzY17uAsd9ndBQYl3JSOEkE9dTy0SxhU3Rgwr9FZsvHqBL8b1kk",
+            "dq": "BxNf51c3tHH2HOwOUTUBF8Q8SjrMT819yPmTXdhOcw_x55pM7J3FG9mLBOsA2SKMZ5-oEjdCtjA5eSJ1Tb-O51GM5oePRxRUFZSUTdLYYQr9iqeH4kKWSF1Ztlq9cRjvod2JkQBvRnhTgw0DaV_5C2463XnA2N_0ud7W7wKWNgE",
+            "qi": "ZwGtxQPO7OKExCRHLpf8vMjR6eUi4IiU2MW-uR7Nz8TvGjJxv4QK0uzcm8u7WLtjPVmpNFXF_oZtrhRm-vwRAf9sf9njBZlEqfbsd5FxNGqAk-QulUyoAXJf5b5BDgKFjMq8i81aZ9fnTqYGcb5ltxoONk0pGo5b5hBQP3n77So"
+        }
+    ]
+}
+`,
+		`{
+    "keys": [
+        {
+            "kty": "EC",
+            "kid": "1-BK3hgXYugTHUnAnYmsrGdIcXcGCtsTrdEpC7Pnl7Y=",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "9KUb3p_HGrm-Df1BBq5_hHOwv81xAm9Vtizc207oFsk",
+            "y": "VHbAQGCJtyPc5-okrJ8S-OLtGqm3XafGx_DOr1j66CQ",
+            "d": "Q5jZHniuKLlFnGlTLDxXsAHwFWe7adprhfhhdy0scfc"
+        },
+        {
+            "kty": "RSA",
+            "kid": "qU1Hi39er6NquoDz8yHraM4GDNzh2RMVtZDrzAx0YjE=",
+            "alg": "RS256",
+            "n": "ufLpQgTABlXL5zxdGjUQKovVs_E7JcoHWCvulQR1rMDIIVMRodwTGJhytJwsXuZPbuE0LEVMtnU4lv0xQWg-IZPvQ5lWmhkbAu4sXmePVq-hBlBdvh1UIf081wD6rrPdA8MwUMm9Y8esQvS70Fut0RBJzb0D-Hw_A_ftt9C1vEsBDZzF_Cfd63FZIsR32iD_x4r_8oI0crkCM6vC-ac6LGmjcVScMC9BCpBPL81soJ94GVPm8h13YG7j8ggq2p0qTPDSh7vjK2mmLs5Kzfw7Ya8tshiS48fLHjdk25TDJKdUsjlbWsZeN4rcEwHJ9kbU1wdD8ytICuPYbBvyaryuSQ",
+            "e": "AQAB",
+            "d": "HBKGEIdzDgHJ5MECNUCpjiLKQn46tbvIXBFV1X103n3EOPO3h74Xy_DH8GhbcoBGobCyFbTonesYfgL_eqZoKt2Qk54EqwL7Rvf6Ds6Hn0iogLGFVXxMBU2b78GgFtvkk_rVwnyScQvl_72-1PfiR9uzqLHOdaccRFcbtlJ1_VT7kMI8wlr1fl3mQJ41TB-pQCxH8Xed6fWjxFzD7tGwFjV-UYw4-6x-_RaNsGdX-jx3m4s0Z8_ZndzL3-UUJV26YGMn_Z0dIv9_v61S7Ison8BHA2WCt7QgSm0UZ6CTS6uH812uEnZCPaxgZxC0ZMLp5Y4biWxJ41gNuSA5iCcLAQ",
+            "p": "3yPOTLcn5CI1W_0FUstzREOmFITVjl8fNYR391K2i924GAaykTM4dJ6G7PRnKIvVktwUHxAKS6yXOsd-akKnSEwEzxwiIFx3gd68O9VTsyrME2DHVggLDI2a4aWxbYIKSrSjITqlYHQ741pl1JQOEmMoHrVOlnt-ia-Yi1sKiJk",
+            "q": "1VUI28iNTgzVaEDnGMjLFxAKlu34bLLKc0NK-KHg7Qd_l_boxPmdJyXgozQTgpqzzYnDoyrGZAMpiKZzf9g8RHpjSLESAVFV8gjWOLxegGB4OOjS0Ceuqz-W5vagPpnLd59cv7yOXpYQdRZZUgcByR210meGMBhFqV6KD6X1cTE",
+            "dp": "GLVlTbdmUmu7TuFYqo9exytag6El6Kr90LZHdnqRPjGiBf8P3OY4FSnMtQZnOeUqFCYMkFf9W93TrS2UAP46edX5Hln2KXEzxoy8eT-pEgjmKisoR42Cc7RmdyAa4o5ox1bzTWWqFGEqlIVZC04NtNmIAsZ-2kj4fRSVprDBHNk",
+            "dq": "hLjLsxkZuHZJivveCtBZcba8L9xLkyzEwWMbUIY9zpm8qwmlFW8Kc6GgGUk73iRrOrO78FabaPuCqo6MCvy3ug6-mCn5vrIgm10eEdw3mvzprtZC2dfmVopQUs8bMPcz2-9cn7kqhfQstvu5hEvxs3L1fLqFhISFSnMTx9qDUfE",
+            "qi": "Tbt6LDjEbAi-lOtrAUTtv-049tBEF58RLbwfL8jz3K7oVym6aryBr61vSoK6DA9tDbjzCbcZt3VUXySxuZI6ir4ZTbQqy5yoS7NKfkqWOisTBnd25PQ_ujDly5RGX_7s1UQFLI_HDkYKsDVr-mkWx70hpO3emGfk2JE1kXmy5CU"
+        }
+    ]
+}
+`}
+
+	var keys jose.JSONWebKeySet
+	if err := json.Unmarshal([]byte(jsonKeys[index]), &keys); err != nil {
+		panic(fmt.Sprintf("failed to unmarshal keys: %s", err))
+	}
+
+	return &keys
 }
