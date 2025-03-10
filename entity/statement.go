@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/tgeoghegan/oidf-box/errors"
 )
 
 const (
@@ -41,20 +42,20 @@ func signatureKeyID(signature string, expectedType string) (*string, *jose.JSONW
 		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to validate JWS signature: %w", err)
+		return nil, nil, errors.Errorf("failed to validate JWS signature: %w", err)
 	}
 
 	if len(jws.Signatures) > 1 {
-		return nil, nil, fmt.Errorf("unexpected multi-signature JWS")
+		return nil, nil, errors.Errorf("unexpected multi-signature JWS")
 	}
 
 	headerType, ok := jws.Signatures[0].Header.ExtraHeaders[jose.HeaderType]
 	if !ok || headerType != expectedType {
-		return nil, nil, fmt.Errorf("wrong or no type in JWS header: %+v", jws.Signatures[0])
+		return nil, nil, errors.Errorf("wrong or no type in JWS header: %+v", jws.Signatures[0])
 	}
 
 	if jws.Signatures[0].Header.KeyID == "" {
-		return nil, nil, fmt.Errorf("JWS header must contain kid")
+		return nil, nil, errors.Errorf("JWS header must contain kid")
 	}
 
 	return &jws.Signatures[0].Header.KeyID, jws, nil
@@ -75,13 +76,13 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 		// kid in the payload's JWKS, so we have to parse it untrusted.
 		var untrustedEntityConfiguration EntityStatement
 		if err := json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &untrustedEntityConfiguration); err != nil {
-			return nil, fmt.Errorf("could not unmarshal JWS payload: %w", err)
+			return nil, errors.Errorf("could not unmarshal JWS payload: %w", err)
 		}
 
 		// We should probably not examine anything in the payload until the signature is validated
 		// but it's convenient to do this now.
 		if untrustedEntityConfiguration.Issuer != untrustedEntityConfiguration.Subject {
-			return nil, fmt.Errorf("iss and sub MUST be identical in entity configuration")
+			return nil, errors.Errorf("iss and sub MUST be identical in entity configuration")
 		}
 
 		keys = &untrustedEntityConfiguration.FederationEntityKeys
@@ -89,17 +90,17 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 
 	verificationKeys := keys.Key(*kid)
 	if len(verificationKeys) != 1 {
-		return nil, fmt.Errorf("found no or multiple keys in JWKS matching header kid")
+		return nil, errors.Errorf("found no or multiple keys in JWKS matching header kid")
 	}
 
 	entityStatementBytes, err := jws.Verify(verificationKeys[0])
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate JWS signature: %w", err)
+		return nil, errors.Errorf("failed to validate JWS signature: %w", err)
 	}
 
 	var trustedEntityStatement EntityStatement
 	if err := json.Unmarshal(entityStatementBytes, &trustedEntityStatement); err != nil {
-		return nil, fmt.Errorf("could not unmarshal JWS payload %s: %w", string(entityStatementBytes), err)
+		return nil, errors.Errorf("could not unmarshal JWS payload %s: %w", string(entityStatementBytes), err)
 	}
 
 	return &trustedEntityStatement, nil
@@ -110,7 +111,7 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadata interface{}) error {
 	metadataMap, ok := ec.Metadata[entityType]
 	if !ok {
-		return fmt.Errorf("could not find metadata for entity %s", entityType)
+		return errors.Errorf("could not find metadata for entity %s", entityType)
 	}
 
 	// Go will deserialize each metadata into a map[string]interface{}. This is stupid and there may
@@ -118,7 +119,7 @@ func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadat
 	// the provided struct so we can use RTTI to give the caller a richer representation.
 	jsonMetadata, err := json.Marshal(metadataMap)
 	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
+		return errors.Errorf("failed to marshal metadata: %w", err)
 	}
 
 	return json.Unmarshal(jsonMetadata, metadata)
@@ -144,16 +145,16 @@ func (es *EntityStatement) VerifyChallenge(signedChallenge string, token string)
 
 	verificationKeys := acmeRequestorMetadata.CertifiableKeys.Key(*kid)
 	if len(verificationKeys) != 1 {
-		return fmt.Errorf("found no or multiple keys in JWKS matching header kid")
+		return errors.Errorf("found no or multiple keys in JWKS matching header kid")
 	}
 
 	challenge, err := jws.Verify(verificationKeys[0])
 	if err != nil {
-		return fmt.Errorf("failed to validate challenge signature: %w", err)
+		return errors.Errorf("failed to validate challenge signature: %w", err)
 	}
 
 	if string(challenge) != token {
-		return fmt.Errorf("requestor challenge response signed over wrong token: %s", challenge)
+		return errors.Errorf("requestor challenge response signed over wrong token: %s", challenge)
 	}
 
 	return nil

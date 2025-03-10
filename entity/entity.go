@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/tgeoghegan/oidf-box/errors"
 )
 
 const (
@@ -57,26 +58,26 @@ type Identifier struct {
 func NewIdentifier(identifier string) (Identifier, error) {
 	entityURL, err := url.Parse(identifier)
 	if err != nil {
-		return Identifier{}, fmt.Errorf(
+		return Identifier{}, errors.Errorf(
 			"identifier '%s' is not a valid OIDF entity identifier: %w",
 			identifier, err)
 	}
 
 	// TODO(timg): https is required by OpenID Federation, but requiring https identifiers is a
 	// hassle in testing here I want to use a bunch of entities like http://localhost:8000
-	// if entityURL.Scheme != "https" {
-	// 	return Identifier{}, fmt.Errorf(
-	// 		"identifier '%s' is not a valid OIDF entity identifier: scheme must be https",
-	// 		identifier)
-	// }
+	if entityURL.Scheme != "https" && entityURL.Scheme != "http" {
+		return Identifier{}, errors.Errorf(
+			"identifier '%s' is not a valid OIDF entity identifier: scheme must be https",
+			identifier)
+	}
 
 	if entityURL.Fragment != "" {
-		return Identifier{}, fmt.Errorf(
+		return Identifier{}, errors.Errorf(
 			"identifier '%s' is not a valid OIDF entity identifier: has fragment", identifier)
 	}
 
 	if len(entityURL.Query()) > 0 {
-		return Identifier{}, fmt.Errorf(
+		return Identifier{}, errors.Errorf(
 			"identifier '%s' is not a valid OIDF entity identifier: has query", identifier)
 	}
 
@@ -174,7 +175,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 	for _, trustAnchor := range options.TrustAnchors {
 		parsedTrustAnchor, err := NewIdentifier(trustAnchor)
 		if err != nil {
-			return nil, fmt.Errorf("invalid trust anchor identifier %s", trustAnchor)
+			return nil, fmt.Errorf("invalid trust anchor identifier %s: %w", trustAnchor, err)
 		}
 
 		trustAnchors = append(trustAnchors, parsedTrustAnchor)
@@ -183,7 +184,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 	// Generate the federation entity keys. Hard code a single 2048 bit RSA key for now.
 	federationEntityKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate key: %w", err)
+		return nil, errors.Errorf("failed to generate key: %w", err)
 	}
 
 	federationEntityKeys, err := privateJWKS([]interface{}{federationEntityKey})
@@ -204,12 +205,12 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 		// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
 		rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate RSA key to certify: %w", err)
+			return nil, errors.Errorf("failed to generate RSA key to certify: %w", err)
 		}
 
 		ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate P256 key to certify: %w", err)
+			return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
 		}
 
 		acmeRequestorKeys, err := privateJWKS([]interface{}{rsaACMERequestorKey, ecACMERequestorKey})
@@ -223,7 +224,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 	if options.ACMEIssuer != "" {
 		url, err := url.Parse(options.ACMEIssuer)
 		if err != nil {
-			return nil, fmt.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
+			return nil, errors.Errorf("invalid ACME issuer URL '%s: %w", options.ACMEIssuer, err)
 		}
 
 		entity.acmeDirectory = url
@@ -250,15 +251,15 @@ func NewAndServe(identifier string, options EntityOptions) (*Entity, error) {
 func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSONWebSignature, error) {
 	payload, err := json.Marshal(entityStatement)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal entity statement to JSON: %w", err)
+		return nil, errors.Errorf("failed to marshal entity statement to JSON: %w", err)
 	}
 
 	if e.federationEntityKeys.Keys[0].KeyID == "" {
-		panic("federation entity key KID should be set")
+		return nil, errors.Errorf("federation entity key KID should be set")
 	}
 
 	if e.federationEntityKeys.Keys[0].Algorithm == "" {
-		panic("federation entity key alg should be set")
+		return nil, errors.Errorf("federation entity key alg should be set")
 	}
 
 	entityConfigurationSigner, err := jose.NewSigner(
@@ -278,12 +279,12 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct JOSE signer: %w", err)
+		return nil, errors.Errorf("failed to construct JOSE signer: %w", err)
 	}
 
 	signed, err := entityConfigurationSigner.Sign(payload)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to sign entity statement: %w", err)
+		return nil, errors.Errorf("Failed to sign entity statement: %w", err)
 	}
 
 	return signed, nil
@@ -374,7 +375,7 @@ func (e *Entity) ServeFederationEndpoints() error {
 	var err error
 	e.listener, err = net.Listen("tcp", net.JoinHostPort("", e.Identifier.URL.Port()))
 	if err != nil {
-		return fmt.Errorf("could not start HTTP server for OIDF EC: %w", err)
+		return errors.Errorf("could not start HTTP server for OIDF EC: %w", err)
 	}
 
 	e.done = make(chan struct{})
@@ -452,12 +453,12 @@ func (e *Entity) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct JOSE signer: %w", err)
+		return nil, errors.Errorf("failed to construct JOSE signer: %w", err)
 	}
 
 	signed, err := challengeSigner.Sign([]byte(token))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to sign challenge: %w", err)
+		return nil, errors.Errorf("Failed to sign challenge: %w", err)
 	}
 
 	return signed, nil
@@ -487,7 +488,7 @@ func (e *Entity) EvaluateTrust(otherEntity Identifier) ([]EntityStatement, error
 		}
 
 		if len(currentEntity.Entity.AuthorityHints) > 1 {
-			return nil, fmt.Errorf("non-trivial trust chains not supported")
+			return nil, errors.Errorf("non-trivial trust chains not supported")
 		}
 
 		// Get entity configuration for next superior
@@ -510,7 +511,7 @@ func (e *Entity) EvaluateTrust(otherEntity Identifier) ([]EntityStatement, error
 
 	// We found a trust anchor. Check if we trust it.
 	if !slices.Contains(e.trustAnchors, trustAnchor.Subject) {
-		return nil, fmt.Errorf("trust anchor '%s' for constructed chain is not trusted",
+		return nil, errors.Errorf("trust anchor '%s' for constructed chain is not trusted",
 			trustAnchor.Subject.String())
 	}
 
@@ -525,7 +526,7 @@ func (e *Entity) EvaluateTrustChain(entityStatements []string) ([]EntityStatemen
 
 func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Request) (error, int) {
 	if r.Method != http.MethodGet {
-		return fmt.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
+		return errors.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
 	}
 
 	entityConfiguration, err := e.SignedEntityConfiguration()
@@ -550,27 +551,27 @@ func (e *Entity) entityConfigurationHandler(w http.ResponseWriter, r *http.Reque
 
 func (e *Entity) federationFetchHandler(w http.ResponseWriter, r *http.Request) (error, int) {
 	if r.Method != http.MethodGet {
-		return fmt.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
+		return errors.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
 	}
 
 	subordinate := r.URL.Query().Get(QueryParamSub)
 	if subordinate == "" {
 		// TODO(timg): error responses confirming to https://openid.net/specs/openid-federation-1_0-41.html#section-8.9
-		return fmt.Errorf("sub query parameter is required"), http.StatusBadRequest
+		return errors.Errorf("sub query parameter is required"), http.StatusBadRequest
 	}
 
 	subordinateIdentifier, err := NewIdentifier(subordinate)
 	if err != nil {
-		return fmt.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
+		return errors.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
 	}
 
 	subordinateStatement, ok := e.subordinates[subordinateIdentifier]
 	if !ok {
-		return fmt.Errorf("subordinate '%s' not found", subordinate), http.StatusNotFound
+		return errors.Errorf("subordinate '%s' not found", subordinate), http.StatusNotFound
 	}
 	signedSub, err := e.signEntityStatement(subordinateStatement)
 	if err != nil {
-		return fmt.Errorf("failed to sign subordinate statement: %w", err), http.StatusInternalServerError
+		return errors.Errorf("failed to sign subordinate statement: %w", err), http.StatusInternalServerError
 	}
 	compact, err := signedSub.CompactSerialize()
 	if err != nil {
@@ -587,7 +588,7 @@ func (e *Entity) federationFetchHandler(w http.ResponseWriter, r *http.Request) 
 
 func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (error, int) {
 	if r.Method != http.MethodGet {
-		return fmt.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
+		return errors.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
 	}
 
 	// We have no idea whether any subordinate is itself an intermediate so don't support that
@@ -595,7 +596,7 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 		// TODO(timg): if/when we support trust marks, do something with these parameters
 		r.URL.Query().Get(QueryParamTrustMarked) != "" ||
 		r.URL.Query().Get(QueryParamTrustMarkID) != "" {
-		return fmt.Errorf("only entity_type query param is supported"), http.StatusBadRequest
+		return errors.Errorf("only entity_type query param is supported"), http.StatusBadRequest
 	}
 
 	subordinateIdentifiers := []Identifier{}
@@ -631,13 +632,13 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 // do this so that we can do it across processes.
 func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 	if r.Method != http.MethodPost {
-		return fmt.Errorf("only POST is allowed"), http.StatusMethodNotAllowed
+		return errors.Errorf("only POST is allowed"), http.StatusMethodNotAllowed
 	}
 
 	subordinates, ok := r.URL.Query()[QueryParamSub]
 	if !ok {
 		// TODO(timg): error responses confirming to https://openid.net/specs/openid-federation-1_0-41.html#section-8.9
-		return fmt.Errorf("sub query parameter is required"), http.StatusBadRequest
+		return errors.Errorf("sub query parameter is required"), http.StatusBadRequest
 	}
 
 	for _, subordinate := range subordinates {
@@ -648,12 +649,12 @@ func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 
 		// Refuse to subordinate yourself
 		if subordinateIdentifier == e.Identifier {
-			return fmt.Errorf("cannot subordinate self"), http.StatusBadRequest
+			return errors.Errorf("cannot subordinate self"), http.StatusBadRequest
 		}
 
 		// Refuse to subordinate own superiors
 		if slices.Contains(e.superiors, subordinateIdentifier) {
-			return fmt.Errorf("cannot subordinate own superior '%s'", subordinate), http.StatusBadRequest
+			return errors.Errorf("cannot subordinate own superior '%s'", subordinate), http.StatusBadRequest
 		}
 
 		if err := e.AddSubordinate(subordinateIdentifier); err != nil {
@@ -672,7 +673,7 @@ func privateJWKS(keys []interface{}) (jose.JSONWebKeySet, error) {
 
 		thumbprint, err := jsonWebKey.Thumbprint(crypto.SHA256)
 		if err != nil {
-			return jose.JSONWebKeySet{}, fmt.Errorf("failed to compute thumbprint: %w", err)
+			return jose.JSONWebKeySet{}, errors.Errorf("failed to compute thumbprint: %w", err)
 		}
 		kid := base64.URLEncoding.EncodeToString(thumbprint)
 		jsonWebKey.KeyID = kid

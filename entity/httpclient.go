@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/tgeoghegan/oidf-box/errors"
 )
 
 // HTTPClient is a client used for HTTP requests to OIDF entities. It allows re-use of a single
@@ -46,21 +48,21 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 
 	fetch, err := url.Parse(federationEntityMetadata.FetchEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, errors.Errorf(
 			"bad fetch endpoint '%s' in federation entity metadata: %w",
 			federationEntityMetadata.FetchEndpoint, err,
 		)
 	}
 	list, err := url.Parse(federationEntityMetadata.ListEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, errors.Errorf(
 			"bad list endpoint '%s' in federation entity metadata: %w",
 			federationEntityMetadata.ListEndpoint, err,
 		)
 	}
 	subordination, err := url.Parse(federationEntityMetadata.SubordinationEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, errors.Errorf(
 			"bad subordination endpoint '%s' in federation entity metadata: %w",
 			federationEntityMetadata.SubordinationEndpoint, err,
 		)
@@ -88,22 +90,22 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 
 	resp, err := c.client.Get(resource.String())
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch EC: %w", err)
+		return nil, errors.Errorf("failed to fetch EC: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// TODO(timg): probably not all GETs will yield HTTP 200 OK
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("response has unexpected HTTP status: %d", resp.StatusCode)
+		return nil, errors.Errorf("response has unexpected HTTP status: %d", resp.StatusCode)
 	}
 
 	if resp.Header.Get("Content-Type") != contentType {
-		return nil, fmt.Errorf("response has wrong content type: %s", resp.Header.Get("Content-Type"))
+		return nil, errors.Errorf("response has wrong content type: %s", resp.Header.Get("Content-Type"))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, errors.Errorf("failed to read response body: %w", err)
 	}
 
 	return body, nil
@@ -164,7 +166,7 @@ func (fe *FederationEndpoints) ListSubordinates(
 
 	var identifiers []Identifier
 	if err := json.Unmarshal(identifiersBytes, &identifiers); err != nil {
-		return nil, fmt.Errorf("could not unmarshal identifiers: %w", err)
+		return nil, errors.Errorf("could not unmarshal identifiers: %w", err)
 	}
 
 	return identifiers, nil
@@ -187,11 +189,11 @@ func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error 
 	// Empty body, no content type?
 	resp, err := fe.client.client.Post(urlWithQueryParams.String(), "", strings.NewReader(""))
 	if err != nil {
-		return fmt.Errorf("failed to POST request: %w", err)
+		return errors.Errorf("failed to POST request: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+		return errors.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
 
 	return nil

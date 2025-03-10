@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/tgeoghegan/oidf-box/entity"
+	"github.com/tgeoghegan/oidf-box/errors"
 )
 
 // ChallengeResponse is the payload POSTed to an ACME challenge for an openid-federation-01 challenge.
@@ -59,7 +60,7 @@ func GenerateCSRWithEntityIdentifier(privateKey crypto.PrivateKey, identifier en
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal GeneralName to ASN.1: %w", err)
+		return nil, errors.Errorf("failed to marshal GeneralName to ASN.1: %w", err)
 	}
 
 	template := x509.CertificateRequest{
@@ -79,7 +80,7 @@ func GenerateCSRWithEntityIdentifier(privateKey crypto.PrivateKey, identifier en
 	// Get high on our own supply -- check if we think the CSR we just made is OK
 	parsedCSR, err := x509.ParseCertificateRequest(csr)
 	if err != nil {
-		return nil, fmt.Errorf("CSR invalid: %w", err)
+		return nil, errors.Errorf("CSR invalid: %w", err)
 	}
 
 	parsedIdentifier, err := EntityIdentifierFromCSR(parsedCSR)
@@ -87,7 +88,7 @@ func GenerateCSRWithEntityIdentifier(privateKey crypto.PrivateKey, identifier en
 		return nil, fmt.Errorf("CSR identifier invalid: %w", err)
 	} else {
 		if !parsedIdentifier.Equals(&identifier) {
-			return nil, fmt.Errorf("Identifier mangled during round trip: %s -> %s", identifier.String(), parsedIdentifier.String())
+			return nil, errors.Errorf("Identifier mangled during round trip: %s -> %s", identifier.String(), parsedIdentifier.String())
 		}
 	}
 
@@ -99,7 +100,7 @@ func GenerateCSRWithEntityIdentifier(privateKey crypto.PrivateKey, identifier en
 func EntityIdentifierFromCSR(csr *x509.CertificateRequest) (*entity.Identifier, error) {
 	if csr.Subject.String() != "" {
 		// TODO(timg): there must be a better way to check that a pkix.Name is empty/zero
-		return nil, fmt.Errorf("CSR contains subject")
+		return nil, errors.Errorf("CSR contains subject")
 	}
 
 	var identifier *entity.Identifier
@@ -110,32 +111,32 @@ func EntityIdentifierFromCSR(csr *x509.CertificateRequest) (*entity.Identifier, 
 		}
 
 		if identifier != nil {
-			return nil, fmt.Errorf("CSR contains multiple SANs")
+			return nil, errors.Errorf("CSR contains multiple SANs")
 		}
 
 		if !extension.Critical {
-			return nil, fmt.Errorf("SAN extension MUST be critical")
+			return nil, errors.Errorf("SAN extension MUST be critical")
 		}
 
 		var names generalNames
 		if _, err := asn1.Unmarshal(extension.Value, &names); err != nil {
-			return nil, fmt.Errorf("failed to parse general names: %w", err)
+			return nil, errors.Errorf("failed to parse general names: %w", err)
 		}
 
 		if !names.OtherName.TypeID.Equal(EntityOID) {
-			return nil, fmt.Errorf("otherName has wrong object identifier for OpenID Federation entity")
+			return nil, errors.Errorf("otherName has wrong object identifier for OpenID Federation entity")
 		}
 
 		localIdentifier, err := entity.NewIdentifier(names.OtherName.Value)
 		if err != nil {
-			return nil, fmt.Errorf("")
+			return nil, errors.Errorf("invalid identifier in CSR '%s': %w", names.OtherName.Value, err)
 		}
 
 		identifier = &localIdentifier
 	}
 
 	if identifier == nil {
-		return nil, fmt.Errorf("found no acceptable SAN extensions in CSR")
+		return nil, errors.Errorf("found no acceptable SAN extensions in CSR")
 	}
 
 	return identifier, nil

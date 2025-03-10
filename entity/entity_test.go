@@ -1,7 +1,6 @@
 package entity
 
 import (
-	_ "fmt"
 	"slices"
 	"testing"
 )
@@ -27,11 +26,11 @@ func TestIdentifier(t *testing.T) {
 			input: "https://example.com/some/path",
 			valid: true,
 		},
-		// {
-		// 	name:  "not-https",
-		// 	input: "http://example.com",
-		// 	valid: false,
-		// },
+		{
+			name:  "not-https",
+			input: "http://example.com",
+			valid: true,
+		},
 		{
 			name:  "query",
 			input: "https://example.com?query=param",
@@ -51,7 +50,7 @@ func TestIdentifier(t *testing.T) {
 			_, err := NewIdentifier(testCase.input)
 			if testCase.valid {
 				if err != nil {
-					t.Errorf("valid name rejected: %s", err.Error())
+					t.Errorf("valid name rejected: %s", err)
 				}
 			} else {
 				if err == nil {
