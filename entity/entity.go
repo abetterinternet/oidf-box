@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -166,8 +167,9 @@ type Entity struct {
 	subordinates map[Identifier]EntityStatement
 	// superiors is the federation entities known to have emitted entity statements about this
 	// entity
-	// TODO(timg): this should be a set, or failing that map[Identifier]struct{}
-	superiors []Identifier
+	superiors map[Identifier]struct{}
+	// mutex protects concurrent access to fields
+	mutex sync.Mutex
 
 	// client is used for OpenID Federation API requests
 	// TODO(timg): cache instances of FederationEndpoints
@@ -223,7 +225,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 		federationEntityKeys: federationEntityKeys,
 		client:               NewOIDFClient(),
 		subordinates:         make(map[Identifier]EntityStatement),
-		superiors:            []Identifier{},
+		superiors:            make(map[Identifier]struct{}),
 	}
 
 	if options.ACMERequestor != nil {
@@ -344,6 +346,13 @@ func (e *Entity) entityConfiguration() EntityStatement {
 		}
 	}
 
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	superiors := []Identifier{}
+	for k, _ := range e.superiors {
+		superiors = append(superiors, k)
+	}
+
 	return EntityStatement{
 		Issuer:               e.Identifier,
 		Subject:              e.Identifier,
@@ -351,7 +360,7 @@ func (e *Entity) entityConfiguration() EntityStatement {
 		Expiration:           time.Now().Unix() + 3600, // valid for 1 hour
 		FederationEntityKeys: publicJWKS(&e.federationEntityKeys),
 		Metadata:             metadata,
-		AuthorityHints:       e.superiors,
+		AuthorityHints:       superiors,
 	}
 }
 
@@ -385,6 +394,8 @@ func (e *Entity) AddSubordinate(subordinate Identifier) error {
 	// authority_hints is forbidden in an entity statement
 	entity.Entity.AuthorityHints = nil
 
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 	e.subordinates[subordinate] = entity.Entity
 
 	return nil
@@ -394,9 +405,21 @@ func (e *Entity) AddSubordinate(subordinate Identifier) error {
 // subsequently be included in the entity configuration. Callers are responsible for getting the
 // designated superior to emit an appropriate entity statement for this entity.
 func (e *Entity) AddSuperior(superior Identifier) {
-	if !slices.Contains(e.superiors, superior) {
-		e.superiors = append(e.superiors, superior)
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.superiors[superior] = struct{}{}
+}
+
+// GetSubordinate gets a subordinate statement for the named entity, if this entity has emitted one.
+func (e *Entity) GetSubordinate(subordinate Identifier) (*EntityStatement, error) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	subordinateStatement, ok := e.subordinates[subordinate]
+	if !ok {
+		return nil, errors.Errorf("subordinate '%s' not found", subordinate.String())
 	}
+
+	return &subordinateStatement, nil
 }
 
 func (e *Entity) ServeFederationEndpoints() error {
@@ -592,11 +615,11 @@ func (e *Entity) federationFetchHandler(w http.ResponseWriter, r *http.Request) 
 		return errors.Errorf("invalid subordinate '%s': %w", subordinate, err), http.StatusBadRequest
 	}
 
-	subordinateStatement, ok := e.subordinates[subordinateIdentifier]
-	if !ok {
-		return errors.Errorf("subordinate '%s' not found", subordinate), http.StatusNotFound
+	subordinateStatement, err := e.GetSubordinate(subordinateIdentifier)
+	if err != nil {
+		return err, http.StatusNotFound
 	}
-	signedSub, err := e.signEntityStatement(subordinateStatement)
+	signedSub, err := e.signEntityStatement(*subordinateStatement)
 	if err != nil {
 		return errors.Errorf("failed to sign subordinate statement: %w", err), http.StatusInternalServerError
 	}
@@ -627,7 +650,7 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 	}
 
 	subordinateIdentifiers := []Identifier{}
-
+	e.mutex.Lock()
 	for _, subordinate := range e.subordinates {
 		if entityTypes, ok := r.URL.Query()[QueryParamEntityType]; ok {
 			for _, entityType := range entityTypes {
@@ -640,6 +663,7 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 			subordinateIdentifiers = append(subordinateIdentifiers, subordinate.Subject)
 		}
 	}
+	e.mutex.Unlock()
 
 	jsonIdentifiers, err := json.Marshal(subordinateIdentifiers)
 	if err != nil {
@@ -680,9 +704,12 @@ func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 		}
 
 		// Refuse to subordinate own superiors
-		if slices.Contains(e.superiors, subordinateIdentifier) {
+		e.mutex.Lock()
+		if _, ok := e.superiors[subordinateIdentifier]; ok {
+			e.mutex.Unlock()
 			return errors.Errorf("cannot subordinate own superior '%s'", subordinate), http.StatusBadRequest
 		}
+		e.mutex.Unlock()
 
 		if err := e.AddSubordinate(subordinateIdentifier); err != nil {
 			return fmt.Errorf("failed to add subordinate: %w", err), http.StatusInternalServerError
