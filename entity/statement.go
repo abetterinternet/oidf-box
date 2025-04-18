@@ -21,14 +21,28 @@ const (
 // EntityStatement is an OIDF Entity Statement
 // https://openid.net/specs/openid-federation-1_0-41.html#section-3
 type EntityStatement struct {
-	Issuer               Identifier                           `json:"iss"`
-	Subject              Identifier                           `json:"sub"`
-	IssuedAt             int64                                `json:"iat"`
-	Expiration           int64                                `json:"exp"`
-	FederationEntityKeys jose.JSONWebKeySet                   `json:"jwks"`
-	AuthorityHints       []Identifier                         `json:"authority_hints,omitempty"`
-	Metadata             map[EntityTypeIdentifier]interface{} `json:"metadata,omitempty"`
-	// TODO(timg): constraints, crit, trust marks
+	// Issuer is the entity that issued this statement.
+	Issuer Identifier `json:"iss"`
+	// Subject is the subject of this statement.
+	Subject Identifier `json:"sub"`
+	// IssuedAt is the time at which this statement was issued.
+	IssuedAt int64 `json:"iat"`
+	// Expiration is the time at which this statement expires.
+	Expiration int64 `json:"exp"`
+	// FederationEntityKeys is the keys used by this entity to sign entity statements.
+	FederationEntityKeys jose.JSONWebKeySet `json:"jwks"`
+	// AuthorityHints is the identifiers of entities that are immediate superiors of this entity.
+	AuthorityHints []Identifier `json:"authority_hints,omitempty"`
+	// Metadata is the metadata for this entity's OIDF entity types.
+	Metadata map[EntityTypeIdentifier]any `json:"metadata,omitempty"`
+	// TrustMarks is the trust marks held by this entity.
+	TrustMarks []TrustMark `json:"trust_marks,omitempty"`
+	// TrustMarkIssuers describes which entities may issue for each of the listed trust mark
+	// identifiers.
+	TrustMarkIssuers map[TrustMarkIdentifier][]Identifier `json:"trust_mark_issuers,omitempty"`
+	// TrustMarkOwners describes which entities own each of the listed trust mark identifiers.
+	TrustMarkOwners map[TrustMarkIdentifier][]Identifier `json:"trust_mark_owners,omitempty"`
+	// TODO(timg): constraints, crit, source_endpoint
 }
 
 // signatureKeyID parses the provided signature and returns the key ID from its JWS header, as well
@@ -158,6 +172,12 @@ func (es *EntityStatement) VerifyChallenge(signedChallenge string, token string)
 	}
 
 	return nil
+}
+
+// IsEntityConfiguration checks whether this statement was self-issued and hence is an Entity
+// Configuration.
+func (es *EntityStatement) IsEntityConfiguration() bool {
+	return es.Issuer == es.Subject
 }
 
 // FederationEntityMetadata is the metadata for an OpenID Federation entity

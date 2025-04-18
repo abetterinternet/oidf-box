@@ -168,6 +168,10 @@ type Entity struct {
 	// superiors is the federation entities known to have emitted entity statements about this
 	// entity
 	superiors map[Identifier]struct{}
+	// trustMarks is the trust marks held by this entity.
+	// TODO: is a slice of TrustMark right here? We need to hold the JWSes, right?
+	trustMarks []TrustMark
+
 	// mutex protects concurrent access to fields
 	mutex sync.Mutex
 
