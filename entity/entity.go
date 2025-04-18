@@ -215,7 +215,7 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 			return nil, errors.Errorf("failed to generate key: %w", err)
 		}
 
-		federationEntityKeys, err = privateJWKS([]interface{}{ecFederationEntityKey, rsaFederationEntityKey})
+		federationEntityKeys, err = privateJWKS([]any{ecFederationEntityKey, rsaFederationEntityKey})
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct JWKS for federation entity: %w", err)
 		}
@@ -245,13 +245,12 @@ func New(identifier string, options EntityOptions) (*Entity, error) {
 				return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
 			}
 
-			acmeRequestorKeys, err := privateJWKS([]interface{}{rsaACMERequestorKey, ecACMERequestorKey})
+			acmeRequestorKeys, err := privateJWKS([]any{rsaACMERequestorKey, ecACMERequestorKey})
 			if err != nil {
 				return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
 			}
 
 			entity.acmeRequestorKeys = acmeRequestorKeys
-
 		} else {
 			entity.acmeRequestorKeys = *options.ACMERequestor.Keys
 		}
@@ -305,7 +304,7 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 			Key:       e.federationEntityKeys.Keys[0].Key,
 		},
 		&jose.SignerOptions{
-			ExtraHeaders: map[jose.HeaderKey]interface{}{
+			ExtraHeaders: map[jose.HeaderKey]any{
 				// "typ" required by OIDF
 				jose.HeaderType: "entity-statement+jwt",
 				// "kid" required by OIDF
@@ -327,7 +326,7 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 
 // entityConfiguration constructs an entity configuration for this entity
 func (e *Entity) entityConfiguration() EntityStatement {
-	metadata := map[EntityTypeIdentifier]interface{}{
+	metadata := map[EntityTypeIdentifier]any{
 		FederationEntity: FederationEntityMetadata{
 			FetchEndpoint:         e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
 			ListEndpoint:          e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
@@ -353,7 +352,7 @@ func (e *Entity) entityConfiguration() EntityStatement {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	superiors := []Identifier{}
-	for k, _ := range e.superiors {
+	for k := range e.superiors {
 		superiors = append(superiors, k)
 	}
 
@@ -497,7 +496,7 @@ func (e *Entity) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 			Key:       e.acmeRequestorKeys.Keys[0].Key,
 		},
 		&jose.SignerOptions{
-			ExtraHeaders: map[jose.HeaderKey]interface{}{
+			ExtraHeaders: map[jose.HeaderKey]any{
 				// kid is REQUIRED by acme-openid-fed, but it doesn't say anything about typ here. I
 				// suspect we should set one to avoid token confusion.
 				// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.5-7
@@ -724,7 +723,7 @@ func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 }
 
 // privateJWKS returns a JSONWebKeySet containing the public and private portions of provided keys
-func privateJWKS(keys []interface{}) (jose.JSONWebKeySet, error) {
+func privateJWKS(keys []any) (jose.JSONWebKeySet, error) {
 	privateJWKS := jose.JSONWebKeySet{}
 	for _, key := range keys {
 		jsonWebKey := jose.JSONWebKey{Key: key}

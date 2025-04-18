@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/tgeoghegan/oidf-box/errors"
@@ -95,7 +96,7 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 
 		// We should probably not examine anything in the payload until the signature is validated
 		// but it's convenient to do this now.
-		if untrustedEntityConfiguration.Issuer != untrustedEntityConfiguration.Subject {
+		if !untrustedEntityConfiguration.IsEntityConfiguration() {
 			return nil, errors.Errorf("iss and sub MUST be identical in entity configuration")
 		}
 
@@ -117,12 +118,30 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 		return nil, errors.Errorf("could not unmarshal JWS payload %s: %w", string(entityStatementBytes), err)
 	}
 
+	if time.Now().Unix() >= trustedEntityStatement.Expiration {
+		return nil, errors.Errorf("entity statement has expired")
+	}
+
+	if !trustedEntityStatement.IsEntityConfiguration() {
+		if len(trustedEntityStatement.AuthorityHints) != 0 {
+			return nil, errors.Errorf("subordinate statements MUST NOT contain authority_hints")
+		}
+
+		if len(trustedEntityStatement.TrustMarkIssuers) != 0 {
+			return nil, errors.Errorf("subordinate statements MUST NOT contain trust_mark_issuers")
+		}
+
+		if len(trustedEntityStatement.TrustMarkOwners) != 0 {
+			return nil, errors.Errorf("subordinate statements MUST NOT contain trust_mark_owners")
+		}
+	}
+
 	return &trustedEntityStatement, nil
 }
 
 // FindMetadata finds metadata for the specified entity type in the EntityStatement and decodes it
 // into the provided metadata unmarshaler.
-func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadata interface{}) error {
+func (ec *EntityStatement) FindMetadata(entityType EntityTypeIdentifier, metadata any) error {
 	metadataMap, ok := ec.Metadata[entityType]
 	if !ok {
 		return errors.Errorf("could not find metadata for entity %s", entityType)
