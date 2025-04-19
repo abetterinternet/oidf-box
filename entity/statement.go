@@ -105,7 +105,7 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 
 	verificationKeys := keys.Key(*kid)
 	if len(verificationKeys) != 1 {
-		return nil, errors.Errorf("found no or multiple keys in JWKS matching header kid")
+		return nil, errors.Errorf("found no or multiple keys in JWKS matching header kid %s", *kid)
 	}
 
 	entityStatementBytes, err := jws.Verify(verificationKeys[0])
@@ -178,7 +178,7 @@ func (es *EntityStatement) VerifyChallenge(signedChallenge string, token string)
 
 	verificationKeys := acmeRequestorMetadata.CertifiableKeys.Key(*kid)
 	if len(verificationKeys) != 1 {
-		return errors.Errorf("found no or multiple keys in JWKS matching header kid")
+		return errors.Errorf("found no or multiple keys in JWKS matching header kid %s", *kid)
 	}
 
 	challenge, err := jws.Verify(verificationKeys[0])
