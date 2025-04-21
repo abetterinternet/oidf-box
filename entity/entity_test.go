@@ -183,6 +183,11 @@ func TestTrustChain(t *testing.T) {
 		t.Fatalf("failed to construct federation endpoints for trust anchor: %s", err.Error())
 	}
 
+	leafEntityClient, err := oidfClient.NewFederationEndpoints(leafEntity.Identifier)
+	if err != nil {
+		t.Fatalf("failed to construct federation endpoints for leaf: %s", err.Error())
+	}
+
 	// Create subordinations
 	if err := intermediateClient.AddSubordinates([]Identifier{leafEntity.Identifier}); err != nil {
 		t.Fatalf("failed to subordinate leaf entity: %s", err.Error())
@@ -205,6 +210,17 @@ func TestTrustChain(t *testing.T) {
 		t.Errorf("unexpected trust chain %v", trustChain)
 	}
 
+	trustChain, err = leafEntityClient.IsTrusted(leafEntity.Identifier)
+	if err != nil {
+		t.Errorf("failed to evaluate trust: %s", err.Error())
+	}
+
+	if !trustChain[0].Subject.Equals(&leafEntity.Identifier) ||
+		!trustChain[1].Subject.Equals(&intermediate.Identifier) ||
+		!trustChain[2].Subject.Equals(&trustAnchor.Identifier) {
+		t.Errorf("unexpected trust chain %v", trustChain)
+	}
+
 	// Construct an unrelated entity untrusted by anybody, and it shouldn't be possible to construct
 	// a chain for it
 	untrustedEntity, err := NewAndServe("http://localhost:8004", EntityOptions{
@@ -216,6 +232,10 @@ func TestTrustChain(t *testing.T) {
 	defer untrustedEntity.CleanUp()
 
 	if _, err := leafEntity.EvaluateTrust(untrustedEntity.Identifier); err == nil {
+		t.Errorf("untrusted entity should not be trusted")
+	}
+
+	if _, err := leafEntityClient.IsTrusted(leafEntity.Identifier); err == nil {
 		t.Errorf("untrusted entity should not be trusted")
 	}
 }

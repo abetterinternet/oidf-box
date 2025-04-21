@@ -202,10 +202,14 @@ func (es *EntityStatement) IsEntityConfiguration() bool {
 // FederationEntityMetadata is the metadata for an OpenID Federation entity
 // https://openid.net/specs/openid-federation-1_0-41.html#section-5.1.1
 type FederationEntityMetadata struct {
-	FetchEndpoint         string `json:"federation_fetch_endpoint"`
-	ListEndpoint          string `json:"federation_list_endpoint"`
-	ResolveEndpoint       string `json:"federation_resolve_endpoint"`
+	FetchEndpoint   string `json:"federation_fetch_endpoint"`
+	ListEndpoint    string `json:"federation_list_endpoint"`
+	ResolveEndpoint string `json:"federation_resolve_endpoint"`
+
+	// Non-standard endpoints
 	SubordinationEndpoint string `json:"federation_subordination_endpoint"`
+	IsTrustedEndpoint     string `json:"federation_is_trusted_endpoint"`
+	SignChallengeEndpoint string `json:"federation_sign_challenge_endpoint"`
 	// TODO(timg): various other endpoints
 }
 

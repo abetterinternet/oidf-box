@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -34,8 +35,15 @@ const (
 	// https://openid.net/specs/openid-federation-1_0-41.html#section-5.1.1
 	FederationFetchEndpoint = "/federation-fetch"
 	FederationListEndpoint  = "/federation-list"
+
+	// Non-standard endpoints
 	// Subordination request endpoint
 	FederationSubordinationEndpoint = "/federation-subordination"
+	// Is trusted endpoint
+	FederationIsTrustedEndpoint = "/federation-is-trusted"
+	// Sign challenge endpoint
+	FederationSignChallengeEndpoint = "/sign-challenge"
+
 	// TODO(timg) Trust mark related endpoints
 
 	// Query parameters for federation endpoints
@@ -328,9 +336,12 @@ func (e *Entity) signEntityStatement(entityStatement EntityStatement) (*jose.JSO
 func (e *Entity) entityConfiguration() EntityStatement {
 	metadata := map[EntityTypeIdentifier]any{
 		FederationEntity: FederationEntityMetadata{
-			FetchEndpoint:         e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
-			ListEndpoint:          e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
+			FetchEndpoint: e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
+			ListEndpoint:  e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
+			// Non-standard endpoints start here
 			SubordinationEndpoint: e.Identifier.URL.JoinPath(FederationSubordinationEndpoint).String(),
+			IsTrustedEndpoint:     e.Identifier.URL.JoinPath(FederationIsTrustedEndpoint).String(),
+			SignChallengeEndpoint: e.Identifier.URL.JoinPath(FederationSignChallengeEndpoint).String(),
 			// TODO(timg): informational metadata
 			// https://openid.net/specs/openid-federation-1_0-41.html#section-5.2.2
 		},
@@ -453,8 +464,20 @@ func (e *Entity) ServeFederationEndpoints() error {
 				http.Error(w, err.Error(), status)
 			}
 		})
+
+		// Non-standard endpoints
 		mux.HandleFunc(FederationSubordinationEndpoint, func(w http.ResponseWriter, r *http.Request) {
 			if err, status := e.federationSubordinationHandler(r); err != nil {
+				http.Error(w, err.Error(), status)
+			}
+		})
+		mux.HandleFunc(FederationIsTrustedEndpoint, func(w http.ResponseWriter, r *http.Request) {
+			if err, status := e.federationIsTrustedHandler(w, r); err != nil {
+				http.Error(w, err.Error(), status)
+			}
+		})
+		mux.HandleFunc(FederationSignChallengeEndpoint, func(w http.ResponseWriter, r *http.Request) {
+			if err, status := e.signChallengeHandler(w, r); err != nil {
 				http.Error(w, err.Error(), status)
 			}
 		})
@@ -681,6 +704,54 @@ func (e *Entity) federationListHandler(w http.ResponseWriter, r *http.Request) (
 	return nil, http.StatusOK
 }
 
+// FederationIsTrustedHandler is a non-standard endpoint for evaluating trust in entities. It can be
+// used in two ways.
+//
+// If the method is GET, then a `sub` query parameter must be provided, containing an Entity
+// Identifier. If this entity trusts the provided `sub`, then it returns HTTP 200 OK.
+//
+// If the method is POST, then the body must be a JSON document containing a chain of Entity
+// Statements. If the chain is valid and is rooted in one of this entity's trust anchors, then it
+// returns 200 OK.
+//
+// This is similar to the standard resolve endpoint, except less flexible.
+func (e *Entity) federationIsTrustedHandler(w http.ResponseWriter, r *http.Request) (error, int) {
+	// TODO: implement trust chain evaluation as documented.
+	if r.Method != http.MethodGet {
+		return errors.Errorf("only GET is allowed"), http.StatusMethodNotAllowed
+	}
+
+	subs, ok := r.URL.Query()[QueryParamSub]
+	if !ok {
+		return errors.Errorf("sub query parameter is required"), http.StatusBadRequest
+	}
+
+	if len(subs) != 1 {
+		return errors.Errorf("only one sub may be provided: %s", subs), http.StatusBadRequest
+	}
+
+	entityIdentifier, err := NewIdentifier(subs[0])
+	if err != nil {
+		return errors.Errorf("entity %s is not a valid identifier: %w", subs[0], err), http.StatusBadRequest
+	}
+	trustChain, err := e.EvaluateTrust(entityIdentifier)
+	if err != nil {
+		return errors.Errorf("entity %s not trusted: %w", subs[0], err), http.StatusBadRequest
+	}
+
+	jsonTrustChain, err := json.Marshal(trustChain)
+	if err != nil {
+		return err, http.StatusInternalServerError
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write([]byte(jsonTrustChain)); err != nil {
+		return err, http.StatusInternalServerError
+	}
+
+	return nil, http.StatusOK
+}
+
 // federationSubordinationHandler implements an HTTP endpoint for OpenID Federation subordination.
 // OIDF deliberately does not define mechanisms for establishing subordination, but we need a way to
 // do this so that we can do it across processes.
@@ -717,6 +788,35 @@ func (e *Entity) federationSubordinationHandler(r *http.Request) (error, int) {
 		if err := e.AddSubordinate(subordinateIdentifier); err != nil {
 			return fmt.Errorf("failed to add subordinate: %w", err), http.StatusInternalServerError
 		}
+	}
+
+	return nil, http.StatusOK
+}
+
+func (e *Entity) signChallengeHandler(w http.ResponseWriter, r *http.Request) (error, int) {
+	if r.Method != http.MethodPost {
+		return errors.Errorf("only POST is allowed"), http.StatusMethodNotAllowed
+	}
+
+	challenge, err := io.ReadAll(r.Body)
+	if err != nil {
+		return errors.Errorf("failed to read challenge from request body: %w", err), http.StatusInternalServerError
+	}
+
+	// Sign the token from the challenge and represent that as a compact JWS
+	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#name-openid-federation-challenge
+	signedToken, err := e.SignChallenge(string(challenge))
+	if err != nil {
+		return errors.Errorf("failed to sign challenge: %w", err), http.StatusInternalServerError
+	}
+
+	compactSignedToken, err := signedToken.CompactSerialize()
+	if err != nil {
+		return errors.Errorf("failed to compact serialize JWS: %w", err), http.StatusInternalServerError
+	}
+
+	if _, err := w.Write([]byte(compactSignedToken)); err != nil {
+		return err, http.StatusInternalServerError
 	}
 
 	return nil, http.StatusOK

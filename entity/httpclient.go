@@ -60,12 +60,27 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 			federationEntityMetadata.ListEndpoint, err,
 		)
 	}
+
+	// Non-standard endpoints
 	subordination, err := url.Parse(federationEntityMetadata.SubordinationEndpoint)
 	if err != nil {
 		return nil, errors.Errorf(
 			"bad subordination endpoint '%s' in federation entity metadata: %w",
 			federationEntityMetadata.SubordinationEndpoint, err,
 		)
+	}
+	isTrusted, err := url.Parse(federationEntityMetadata.IsTrustedEndpoint)
+	if err != nil {
+		return nil, errors.Errorf(
+			"bad is trusted endpoint '%s' in federation entity metadata: %w",
+			federationEntityMetadata.IsTrustedEndpoint, err,
+		)
+	}
+	signChallenge, err := url.Parse(federationEntityMetadata.SignChallengeEndpoint)
+	if err != nil {
+		return nil, errors.Errorf(
+			"bad sign challenge endpoint '%s' in federation entity metadata: %w",
+			federationEntityMetadata.SignChallengeEndpoint, err)
 	}
 
 	return &FederationEndpoints{
@@ -74,6 +89,8 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 		fetchEndpoint:         *fetch,
 		listEndpoint:          *list,
 		subordinationEndpoint: *subordination,
+		isTrustedEndpoint:     *isTrusted,
+		signChallengeEndpoint: *signChallenge,
 	}, nil
 }
 
@@ -96,7 +113,12 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 
 	// TODO(timg): probably not all GETs will yield HTTP 200 OK
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("response has unexpected HTTP status: %d", resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, errors.Errorf("response has unexpected HTTP status: %d", resp.StatusCode)
+		} else {
+			return nil, errors.Errorf("response has unexpected HTTP status: %d\nbody: %s", resp.StatusCode, string(body))
+		}
 	}
 
 	if resp.Header.Get("Content-Type") != contentType {
@@ -114,11 +136,14 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 // FederationEndpoints provides a client for (some of, WIP) a specific entity's federation endpoints
 // defined in https://openid.net/specs/openid-federation-1_0-41.html#name-federation-endpoints
 type FederationEndpoints struct {
-	client                HTTPClient
-	Entity                EntityStatement
-	fetchEndpoint         url.URL
-	listEndpoint          url.URL
+	client        HTTPClient
+	Entity        EntityStatement
+	fetchEndpoint url.URL
+	listEndpoint  url.URL
+	// Non-standard endpoints
 	subordinationEndpoint url.URL
+	isTrustedEndpoint     url.URL
+	signChallengeEndpoint url.URL
 	// TODO(timg): other federation endpoints
 }
 
@@ -176,18 +201,10 @@ func (fe *FederationEndpoints) ListSubordinates(
 // OIDF deliberately does not specify how this works, but I needed to invent something to enable
 // federation construction across processes.
 func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error {
-	identifiers := []string{}
-	for _, subordinate := range subordinates {
-		identifiers = append(identifiers, subordinate.String())
-	}
-
-	urlWithQueryParams := fe.subordinationEndpoint
-	urlWithQueryParams.RawQuery = url.Values(map[string][]string{
-		QueryParamSub: identifiers,
-	}).Encode()
+	urlWithSubParam := addSubQueryParam(fe.subordinationEndpoint, subordinates)
 
 	// Empty body, no content type?
-	resp, err := fe.client.client.Post(urlWithQueryParams.String(), "", strings.NewReader(""))
+	resp, err := fe.client.client.Post(urlWithSubParam.String(), "", strings.NewReader(""))
 	if err != nil {
 		return errors.Errorf("failed to POST request: %w", err)
 	}
@@ -197,4 +214,57 @@ func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error 
 	}
 
 	return nil
+}
+
+// IsTrusted returns a validated trust chain if the other entity is trusted by the entity, and an
+// error otherwise.
+func (fe *FederationEndpoints) IsTrusted(otherEntity Identifier) ([]EntityStatement, error) {
+	urlWithSubParam := addSubQueryParam(fe.isTrustedEndpoint, []Identifier{otherEntity})
+
+	trustChainBytes, err := fe.client.get(urlWithSubParam, "application/json", nil)
+	if err != nil {
+		return nil, errors.Errorf("failed to GET request: %w", err)
+	}
+
+	var trustChain []EntityStatement
+	if err := json.Unmarshal(trustChainBytes, &trustChain); err != nil {
+		return nil, errors.Errorf("could not unmarshal trust chain: %w", err)
+	}
+
+	return trustChain, nil
+}
+
+// EvaluateTrustChain returns nil if the provided trust chain is trusted by the entity, and an error
+// otherwise.
+func (fe *FederationEndpoints) EvaluateTrustChain(trustChain []string) ([]EntityStatement, error) {
+	panic("not implemented")
+}
+
+func (fe *FederationEndpoints) SignChallenge(token string) (string, error) {
+	resp, err := fe.client.client.Post(fe.signChallengeEndpoint.String(), "text", strings.NewReader(token))
+	if err != nil {
+		return "", errors.Errorf("failed to POST signature request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	signedToken, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.Errorf("failed to read signed token from response: %w", err)
+	}
+
+	return string(signedToken), nil
+}
+
+func addSubQueryParam(originalURL url.URL, entities []Identifier) url.URL {
+	identifiers := []string{}
+	for _, entity := range entities {
+		identifiers = append(identifiers, entity.String())
+	}
+
+	urlWithQueryParams := originalURL
+	urlWithQueryParams.RawQuery = url.Values(map[string][]string{
+		QueryParamSub: identifiers,
+	}).Encode()
+
+	return urlWithQueryParams
 }
