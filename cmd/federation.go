@@ -5,10 +5,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/go-acme/lego/v4/acme"
 	"github.com/go-acme/lego/v4/certcrypto"
@@ -21,6 +24,7 @@ import (
 	"github.com/letsencrypt/pebble/v2/va"
 	"github.com/letsencrypt/pebble/v2/wfe"
 	"github.com/tgeoghegan/oidf-box/entity"
+	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
 )
 
 // DemoUser implements registration.User
@@ -222,9 +226,31 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Each certificate comes back with the cert bytes, the bytes of the client's
-	// private key, and a certificate URL. SAVE THESE TO DISK.
-	fmt.Printf("PEM certificate:\n%s", string(certificates.Certificate))
+	fmt.Printf("PEM certificate:\n%s\n", string(certificates.Certificate))
+
+	block, _ := pem.Decode(certificates.Certificate)
+	if block == nil || block.Type != "CERTIFICATE" {
+		log.Fatal("failed to parse PEM certificate")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		log.Fatalf("failed to parse X.509 certificate: %s", err)
+	}
+
+	oidfIdentifiers, err := oidf01.EntityIdentifiersFromCertificate(cert)
+	if err != nil {
+		log.Fatalf("failed to extract OpenID Federation identifiers from certificate: %s", err)
+	}
+
+	if !slices.Contains(oidfIdentifiers, requestor.Identifier) ||
+		!slices.Contains(oidfIdentifiers, otherLeafEntity.Identifier) ||
+		len(oidfIdentifiers) != 2 {
+		log.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
+	}
+
+	fmt.Printf("Identifiers in end entity cert: %s, %s\n",
+		oidfIdentifiers[0].String(), oidfIdentifiers[1].String())
 }
 
 func setupPebble(issuer *entity.FederationEndpoints) (func(), error) {

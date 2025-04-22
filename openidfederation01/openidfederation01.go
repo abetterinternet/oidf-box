@@ -151,21 +151,31 @@ func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers 
 // EntityIdentifiersFromCSR validates that the CSR conforms to the acme-openid draft and returns the
 // OpenID Federation entity identifiers therein.
 func EntityIdentifiersFromCSR(csr *x509.CertificateRequest) ([]entity.Identifier, error) {
-	if csr.Subject.String() != "" {
+	return entityIdentifiersFromExtensions(csr.Subject, csr.Extensions)
+}
+
+// EntityIdentifiersFromCertificate validates that the certificate conforms to the acme-openid draft
+// and returns the OpenID Federation entity identifiers therein.
+func EntityIdentifiersFromCertificate(cert *x509.Certificate) ([]entity.Identifier, error) {
+	return entityIdentifiersFromExtensions(cert.Subject, cert.Extensions)
+}
+
+func entityIdentifiersFromExtensions(subject pkix.Name, extensions []pkix.Extension) ([]entity.Identifier, error) {
+	if subject.String() != "" {
 		// TODO(timg): there must be a better way to check that a pkix.Name is empty/zero
-		return []entity.Identifier{}, errors.Errorf("CSR contains subject")
+		return []entity.Identifier{}, errors.Errorf("Subject is present")
 	}
 
 	sawSANExtension := false
 	identifiers := []entity.Identifier{}
-	for _, extension := range csr.Extensions {
+	for _, extension := range extensions {
 		// Ignore extensions that aren't SANs
 		if !extension.Id.Equal(SubjectAlternativeNameOID) {
 			continue
 		}
 
 		if sawSANExtension {
-			return nil, errors.Errorf("CSR contains multiple SAN extensions")
+			return nil, errors.Errorf("multiple SAN extensions found")
 		}
 
 		sawSANExtension = true
@@ -197,7 +207,7 @@ func EntityIdentifiersFromCSR(csr *x509.CertificateRequest) ([]entity.Identifier
 
 			identifier, err := entity.NewIdentifier(name.Value)
 			if err != nil {
-				return nil, errors.Errorf("invalid identifier in CSR '%s': %w", name.Value, err)
+				return nil, errors.Errorf("invalid identifier in SAN '%s': %w", name.Value, err)
 			}
 
 			identifiers = append(identifiers, identifier)
@@ -205,7 +215,7 @@ func EntityIdentifiersFromCSR(csr *x509.CertificateRequest) ([]entity.Identifier
 	}
 
 	if len(identifiers) == 0 {
-		return []entity.Identifier{}, errors.Errorf("found no acceptable SAN extensions in CSR")
+		return []entity.Identifier{}, errors.Errorf("found no acceptable SAN extensions")
 	}
 
 	return identifiers, nil
