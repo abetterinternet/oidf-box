@@ -8,6 +8,11 @@ require (
 )
 
 require (
+	github.com/letsencrypt/challtestsrv v1.3.2 // indirect
+	github.com/letsencrypt/pebble/v2 v2.7.0
+)
+
+require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/go-acme/lego/v4 v4.23.1
 	github.com/miekg/dns v1.1.64 // indirect
@@ -21,3 +26,5 @@ require (
 )
 
 replace github.com/go-acme/lego/v4 => ../lego
+
+replace github.com/letsencrypt/pebble/v2 => ../pebble

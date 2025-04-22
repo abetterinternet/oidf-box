@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-acme/lego/v4/acme"
 	"github.com/go-acme/lego/v4/certcrypto"
@@ -15,6 +16,10 @@ import (
 	"github.com/go-acme/lego/v4/challenge/openidfederation01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/letsencrypt/pebble/v2/ca"
+	"github.com/letsencrypt/pebble/v2/db"
+	"github.com/letsencrypt/pebble/v2/va"
+	"github.com/letsencrypt/pebble/v2/wfe"
 	"github.com/tgeoghegan/oidf-box/entity"
 )
 
@@ -84,6 +89,10 @@ func main() {
 		log.Fatalf("failed to construct issuer: %s", err)
 	}
 	defer issuer.CleanUp()
+	issuerClient, err := oidfClient.NewFederationEndpoints(issuer.Identifier)
+	if err != nil {
+		log.Fatalf("failed to create OIDF client: %s", err)
+	}
 
 	// Create entity for the requestor
 	requestor, err := entity.NewAndServe("http://localhost:8003", entity.EntityOptions{
@@ -127,6 +136,14 @@ func main() {
 
 	log.Printf("serving OpenID Federation endpoints for entities:\n\ttrust anchor: %s\n\tintermediate: %s\n\tissuer: %s\n\trequestor: %s\n\tother leaf: %s\n\t\n",
 		trustAnchor.Identifier.String(), intermediate.Identifier.String(), issuer.Identifier.String(), requestor.Identifier.String(), otherLeafEntity.Identifier.String())
+
+	// Setup Pebble and spawn a goroutine to run it
+	pebbleFunc, err := setupPebble(issuerClient)
+	if err != nil {
+		log.Fatalf("failed to setup Pebble: %s", err)
+	}
+
+	go pebbleFunc()
 
 	// acme-openid suggests doing discovery to find an entity in the federation with entity type
 	// acme_issuer. In this example, we'll just assume we've been provided with the issuer's entity
@@ -208,4 +225,59 @@ func main() {
 	// Each certificate comes back with the cert bytes, the bytes of the client's
 	// private key, and a certificate URL. SAVE THESE TO DISK.
 	fmt.Printf("PEM certificate:\n%s", string(certificates.Certificate))
+}
+
+func setupPebble(issuer *entity.FederationEndpoints) (func(), error) {
+	// Log to stdout
+	logger := log.New(os.Stdout, "Pebble ", log.LstdFlags)
+	logger.Printf("Starting Pebble ACME server")
+
+	db := db.NewMemoryStore()
+	ca := ca.New(
+		logger,
+		db,
+		"", // OCSP responder URL
+		0,  // alternate roots
+		1,  // chain length
+		map[string]ca.Profile{
+			"default": {
+				Description:    "The default profile",
+				ValidityPeriod: 0, // Will be overridden by the CA's default
+			}},
+	)
+	va := va.New(
+		logger,
+		5002,  // HTTP port
+		5001,  // TLS port
+		false, //strictMode
+		"",    // resolverAddress
+		issuer,
+		db,
+	)
+	wfeImpl := wfe.New(
+		logger,
+		db,
+		va,
+		ca,
+		false, // strictMode
+		false, // externalAccountBindingRequired
+		3,     // authz retry after
+		5,     // order retry after
+	)
+	muxHandler := wfeImpl.Handler()
+
+	return func() {
+		listenAddress := "0.0.0.0:14000"
+		logger.Printf("Listening on: %s\n", listenAddress)
+		logger.Printf("ACME directory available at https://%s%s",
+			listenAddress, wfe.DirectoryPath)
+		err := http.ListenAndServeTLS(
+			listenAddress,
+			"test/certs/localhost/cert.pem",
+			"test/certs/localhost/key.pem",
+			muxHandler)
+		if err != nil {
+			log.Fatalf("calling ListenAndServeTLS(): %s", err)
+		}
+	}, nil
 }
