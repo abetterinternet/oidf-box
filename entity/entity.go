@@ -370,8 +370,8 @@ func (e *Entity) entityConfiguration() EntityStatement {
 	return EntityStatement{
 		Issuer:               e.Identifier,
 		Subject:              e.Identifier,
-		IssuedAt:             time.Now().Unix(),
-		Expiration:           time.Now().Unix() + 3600, // valid for 1 hour
+		IssuedAt:             float64(time.Now().Unix()),
+		Expiration:           float64(time.Now().Unix() + 3600), // valid for 1 hour
 		FederationEntityKeys: publicJWKS(&e.federationEntityKeys),
 		Metadata:             metadata,
 		AuthorityHints:       superiors,
@@ -403,8 +403,8 @@ func (e *Entity) AddSubordinate(subordinate Identifier) error {
 
 	// Construct the equivalent entity statement
 	entity.Entity.Issuer = e.Identifier
-	entity.Entity.IssuedAt = time.Now().Unix()
-	entity.Entity.Expiration = time.Now().Unix() + 3600 // valid for 1 hour
+	entity.Entity.IssuedAt = float64(time.Now().Unix())
+	entity.Entity.Expiration = float64(time.Now().Unix() + 3600) // valid for 1 hour
 	// authority_hints is forbidden in an entity statement
 	entity.Entity.AuthorityHints = nil
 
