@@ -3,12 +3,14 @@ package entity
 import (
 	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
+	"github.com/go-jose/go-jose/v4"
+	_ "github.com/go-jose/go-jose/v4"
 	"github.com/tgeoghegan/oidf-box/errors"
 )
 
@@ -38,59 +40,68 @@ func (c *HTTPClient) NewFederationEndpoints(identifier Identifier) (*FederationE
 
 	entityConfiguration, err := ValidateEntityStatement(string(ecBytes), nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate EC: %w", err)
+		return nil, errors.Errorf("failed to validate EC: %w", err)
 	}
 
 	var federationEntityMetadata FederationEntityMetadata
 	if err := entityConfiguration.FindMetadata(FederationEntity, &federationEntityMetadata); err != nil {
-		return nil, fmt.Errorf("EC does not contain federation entity metadata")
+		return nil, errors.Errorf("EC does not contain federation entity metadata")
 	}
 
-	fetch, err := url.Parse(federationEntityMetadata.FetchEndpoint)
-	if err != nil {
-		return nil, errors.Errorf(
-			"bad fetch endpoint '%s' in federation entity metadata: %w",
-			federationEntityMetadata.FetchEndpoint, err,
-		)
+	var fetch *url.URL
+	if federationEntityMetadata.FetchEndpoint != "" {
+		fetch, err = url.Parse(federationEntityMetadata.FetchEndpoint)
+		if err != nil {
+			return nil, errors.Errorf(
+				"bad fetch endpoint '%s' in federation entity metadata: %w",
+				federationEntityMetadata.FetchEndpoint, err,
+			)
+		}
 	}
-	list, err := url.Parse(federationEntityMetadata.ListEndpoint)
-	if err != nil {
-		return nil, errors.Errorf(
-			"bad list endpoint '%s' in federation entity metadata: %w",
-			federationEntityMetadata.ListEndpoint, err,
-		)
+	var list *url.URL
+	if federationEntityMetadata.ListEndpoint != "" {
+		list, err = url.Parse(federationEntityMetadata.ListEndpoint)
+		if err != nil {
+			return nil, errors.Errorf(
+				"bad list endpoint '%s' in federation entity metadata: %w",
+				federationEntityMetadata.ListEndpoint, err,
+			)
+		}
+	}
+	var resolve *url.URL
+	if federationEntityMetadata.ResolveEndpoint != "" {
+		resolve, err = url.Parse(federationEntityMetadata.ResolveEndpoint)
+		if err != nil {
+			return nil, errors.Errorf(
+				"bad resolve endpoint '%s' in federation entity metadata: %w",
+				federationEntityMetadata.ResolveEndpoint, err,
+			)
+		}
 	}
 
 	// Non-standard endpoints
-	subordination, err := url.Parse(federationEntityMetadata.SubordinationEndpoint)
-	if err != nil {
-		return nil, errors.Errorf(
-			"bad subordination endpoint '%s' in federation entity metadata: %w",
-			federationEntityMetadata.SubordinationEndpoint, err,
-		)
-	}
-	isTrusted, err := url.Parse(federationEntityMetadata.IsTrustedEndpoint)
-	if err != nil {
-		return nil, errors.Errorf(
-			"bad is trusted endpoint '%s' in federation entity metadata: %w",
-			federationEntityMetadata.IsTrustedEndpoint, err,
-		)
-	}
-	signChallenge, err := url.Parse(federationEntityMetadata.SignChallengeEndpoint)
-	if err != nil {
-		return nil, errors.Errorf(
-			"bad sign challenge endpoint '%s' in federation entity metadata: %w",
-			federationEntityMetadata.SignChallengeEndpoint, err)
+	var isrgExtensionMetadata ISRGExtensionsEntityMetadata
+	var isTrusted *url.URL
+	var signChallenge *url.URL
+	if err := entityConfiguration.FindMetadata(ISRGExtensions, &isrgExtensionMetadata); err == nil {
+		if isrgExtensionMetadata.SignChallengeEndpoint != "" {
+			signChallenge, err = url.Parse(isrgExtensionMetadata.SignChallengeEndpoint)
+			if err != nil {
+				return nil, errors.Errorf(
+					"bad sign challenge endpoint '%s' in ISRG extensions metadata: %w",
+					isrgExtensionMetadata.SignChallengeEndpoint, err)
+			}
+		}
 	}
 
 	return &FederationEndpoints{
 		client:                *c,
 		Entity:                *entityConfiguration,
-		fetchEndpoint:         *fetch,
-		listEndpoint:          *list,
-		subordinationEndpoint: *subordination,
-		isTrustedEndpoint:     *isTrusted,
-		signChallengeEndpoint: *signChallenge,
+		fetchEndpoint:         fetch,
+		listEndpoint:          list,
+		resolveEndpoint:       resolve,
+		isTrustedEndpoint:     isTrusted,
+		signChallengeEndpoint: signChallenge,
 	}, nil
 }
 
@@ -107,7 +118,7 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 
 	resp, err := c.client.Get(resource.String())
 	if err != nil {
-		return nil, errors.Errorf("failed to fetch EC: %w", err)
+		return nil, errors.Errorf("failed to fetch resource: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -136,21 +147,25 @@ func (c *HTTPClient) get(resource url.URL, contentType string, queryParams map[s
 // FederationEndpoints provides a client for (some of, WIP) a specific entity's federation endpoints
 // defined in https://openid.net/specs/openid-federation-1_0-41.html#name-federation-endpoints
 type FederationEndpoints struct {
-	client        HTTPClient
-	Entity        EntityStatement
-	fetchEndpoint url.URL
-	listEndpoint  url.URL
+	client          HTTPClient
+	Entity          EntityStatement
+	fetchEndpoint   *url.URL
+	listEndpoint    *url.URL
+	resolveEndpoint *url.URL
 	// Non-standard endpoints
-	subordinationEndpoint url.URL
-	isTrustedEndpoint     url.URL
-	signChallengeEndpoint url.URL
+	subordinationEndpoint *url.URL
+	isTrustedEndpoint     *url.URL
+	signChallengeEndpoint *url.URL
 	// TODO(timg): other federation endpoints
 }
 
 // SubordinateStatement fetches a subordinate statement for the provided entity.
 // https://openid.net/specs/openid-federation-1_0-41.html#name-fetch-subordinate-statement
 func (fe *FederationEndpoints) SubordinateStatement(subordinate Identifier) (*EntityStatement, error) {
-	esBytes, err := fe.client.get(fe.fetchEndpoint, EntityStatementContentType, map[string][]string{
+	if fe.fetchEndpoint == nil {
+		return nil, errors.Errorf("no fetch endpoint in entity metadata")
+	}
+	esBytes, err := fe.client.get(*fe.fetchEndpoint, EntityStatementContentType, map[string][]string{
 		QueryParamSub: {subordinate.String()},
 	})
 	if err != nil {
@@ -159,7 +174,7 @@ func (fe *FederationEndpoints) SubordinateStatement(subordinate Identifier) (*En
 
 	entityStatement, err := ValidateEntityStatement(string(esBytes), &fe.Entity.FederationEntityKeys)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate entity statement: %w", err)
+		return nil, errors.Errorf("failed to validate entity statement: %w", err)
 	}
 
 	return entityStatement, nil
@@ -171,6 +186,9 @@ func (fe *FederationEndpoints) SubordinateStatement(subordinate Identifier) (*En
 func (fe *FederationEndpoints) ListSubordinates(
 	entityTypes []EntityTypeIdentifier, intermediate bool,
 ) ([]Identifier, error) {
+	if fe.listEndpoint == nil {
+		return nil, errors.Errorf("no list endpoint in entity metadata")
+	}
 	queryParams := make(map[string][]string)
 	if len(entityTypes) != 0 {
 		entityTypeStrings := []string{}
@@ -184,7 +202,7 @@ func (fe *FederationEndpoints) ListSubordinates(
 	}
 
 	// TODO(timg): wire up trustMarked and trustMarkID
-	identifiersBytes, err := fe.client.get(fe.listEndpoint, "application/json", queryParams)
+	identifiersBytes, err := fe.client.get(*fe.listEndpoint, "application/json", queryParams)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +219,10 @@ func (fe *FederationEndpoints) ListSubordinates(
 // OIDF deliberately does not specify how this works, but I needed to invent something to enable
 // federation construction across processes.
 func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error {
-	urlWithSubParam := addSubQueryParam(fe.subordinationEndpoint, subordinates)
+	if fe.subordinationEndpoint == nil {
+		return errors.Errorf("no subordination endpoint in entity metadata")
+	}
+	urlWithSubParam := addSubQueryParam(*fe.subordinationEndpoint, subordinates)
 
 	// Empty body, no content type?
 	resp, err := fe.client.client.Post(urlWithSubParam.String(), "", strings.NewReader(""))
@@ -219,7 +240,10 @@ func (fe *FederationEndpoints) AddSubordinates(subordinates []Identifier) error 
 // IsTrusted returns a validated trust chain if the other entity is trusted by the entity, and an
 // error otherwise.
 func (fe *FederationEndpoints) IsTrusted(otherEntity Identifier) ([]EntityStatement, error) {
-	urlWithSubParam := addSubQueryParam(fe.isTrustedEndpoint, []Identifier{otherEntity})
+	if fe.isTrustedEndpoint == nil {
+		return nil, errors.Errorf("no is trusted endpoint in entity metadata")
+	}
+	urlWithSubParam := addSubQueryParam(*fe.isTrustedEndpoint, []Identifier{otherEntity})
 
 	trustChainBytes, err := fe.client.get(urlWithSubParam, "application/json", nil)
 	if err != nil {
@@ -234,13 +258,104 @@ func (fe *FederationEndpoints) IsTrusted(otherEntity Identifier) ([]EntityStatem
 	return trustChain, nil
 }
 
-// EvaluateTrustChain returns nil if the provided trust chain is trusted by the entity, and an error
-// otherwise.
-func (fe *FederationEndpoints) EvaluateTrustChain(trustChain []string) ([]EntityStatement, error) {
-	panic("not implemented")
+type ResolveResponse struct {
+	EntityStatement
+	TrustChain []string `json:"trust_chain"`
+}
+
+func (fe *FederationEndpoints) Resolve(
+	subject Identifier,
+	trustAnchor Identifier,
+	entityTypes []EntityTypeIdentifier,
+) (*ResolveResponse, error) {
+	if fe.resolveEndpoint == nil {
+		return nil, errors.Errorf("no resolve endpoint in entity metadata")
+	}
+
+	entityTypeStrings := []string{}
+	for _, entityType := range entityTypes {
+		entityTypeStrings = append(entityTypeStrings, string(entityType))
+	}
+
+	resolveResponseBytes, err := fe.client.get(
+		*fe.resolveEndpoint,
+		"application/resolve-response+jwt",
+		map[string][]string{
+			QueryParamSub:         {subject.String()},
+			QueryParamTrustAnchor: {trustAnchor.String()},
+			QueryParamEntityType:  entityTypeStrings,
+		},
+	)
+	if err != nil {
+		return nil, errors.Errorf("could not get resolve response from server: %w", err)
+	}
+
+	validatedPayload, err := ValidateEntityStatementReturningPayload(
+		string(resolveResponseBytes),
+		"resolve-response+jwt",
+		&fe.Entity.FederationEntityKeys,
+	)
+	if err != nil {
+		return nil, errors.Errorf("failed to validate entity statement: %w", err)
+	}
+
+	var resolveResponse ResolveResponse
+	if err := json.Unmarshal(validatedPayload.Payload, &resolveResponse); err != nil {
+		return nil, errors.Errorf("could not unmarshal resolve resolve: %w", err)
+	}
+
+	if resolveResponse.Subject != subject {
+		return nil, errors.Errorf(
+			"subject '%s' in resolve response does not match",
+			resolveResponse.Subject.String(),
+		)
+	}
+
+	// Validate the trust chain in the response. The 0th element is an entity configuration for the
+	// subject.
+	subjectEC, err := ValidateEntityStatement(resolveResponse.TrustChain[0], nil)
+	if err != nil {
+		return nil, errors.Errorf("entity configuration in resolved trust chain not trustworthy: %w", err)
+	}
+	if subjectEC.Subject != subject {
+		return nil, errors.Errorf(
+			"entity configuration subject in resolve response '%s' does not match",
+			subjectEC.Subject.String(),
+		)
+	}
+
+	// The remaining elements are a chain of subordinate statements, ending in an EC for the trust
+	// anchor. Walk the trust chain backward (starting at the trust anchor), until we hit the end,
+	// validating signatures along the way and checking that the subject of the end entity is right.
+	trustChain := resolveResponse.TrustChain[1:]
+	slices.Reverse(trustChain)
+	var lastKeys *jose.JSONWebKeySet
+	for i, jws := range trustChain {
+		entityStatement, err := ValidateEntityStatement(jws, lastKeys)
+		if err != nil {
+			return nil, err
+		}
+		lastKeys = &entityStatement.FederationEntityKeys
+
+		if i == len(trustChain)-1 {
+			// End of the iterator. Check that the subject of the end entity is the subject we are
+			// resolving.
+			if entityStatement.Subject != subject {
+				return nil, errors.Errorf(
+					"end entity in resolved trust chain '%s' does not match",
+					entityStatement.Subject.String(),
+				)
+			}
+		}
+	}
+
+	return &resolveResponse, nil
 }
 
 func (fe *FederationEndpoints) SignChallenge(token string) (string, error) {
+	if fe.signChallengeEndpoint == nil {
+		return "", errors.Errorf("no sign challenge endpoint in entity metadata")
+	}
 	resp, err := fe.client.client.Post(fe.signChallengeEndpoint.String(), "text", strings.NewReader(token))
 	if err != nil {
 		return "", errors.Errorf("failed to POST signature request: %w", err)

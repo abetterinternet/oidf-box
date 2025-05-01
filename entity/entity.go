@@ -44,11 +44,10 @@ const (
 	// Sign challenge endpoint
 	FederationSignChallengeEndpoint = "/sign-challenge"
 
-	// TODO(timg) Trust mark related endpoints
-
 	// Query parameters for federation endpoints
 	QueryParamSub          = "sub"
 	QueryParamEntityType   = "entity_type"
+	QueryParamTrustAnchor  = "trust_anchor"
 	QueryParamTrustMarked  = "trust_marked"
 	QueryParamTrustMarkID  = "trust_mark_id"
 	QueryParamIntermediate = "intermediate"
@@ -338,12 +337,12 @@ func (e *Entity) entityConfiguration() EntityStatement {
 		FederationEntity: FederationEntityMetadata{
 			FetchEndpoint: e.Identifier.URL.JoinPath(FederationFetchEndpoint).String(),
 			ListEndpoint:  e.Identifier.URL.JoinPath(FederationListEndpoint).String(),
-			// Non-standard endpoints start here
-			SubordinationEndpoint: e.Identifier.URL.JoinPath(FederationSubordinationEndpoint).String(),
-			IsTrustedEndpoint:     e.Identifier.URL.JoinPath(FederationIsTrustedEndpoint).String(),
-			SignChallengeEndpoint: e.Identifier.URL.JoinPath(FederationSignChallengeEndpoint).String(),
 			// TODO(timg): informational metadata
 			// https://openid.net/specs/openid-federation-1_0-41.html#section-5.2.2
+		},
+		ISRGExtensions: ISRGExtensionsEntityMetadata{
+			// Non-standard endpoints start here
+			SignChallengeEndpoint: e.Identifier.URL.JoinPath(FederationSignChallengeEndpoint).String(),
 		},
 	}
 
@@ -820,6 +819,26 @@ func (e *Entity) signChallengeHandler(w http.ResponseWriter, r *http.Request) (e
 	}
 
 	return nil, http.StatusOK
+}
+
+func GenerateCertifiableKeys() (*jose.JSONWebKeySet, error) {
+	// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
+	rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, errors.Errorf("failed to generate RSA key to certify: %w", err)
+	}
+
+	ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
+	}
+
+	acmeRequestorKeys, err := privateJWKS([]any{rsaACMERequestorKey, ecACMERequestorKey})
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
+	}
+
+	return &acmeRequestorKeys, err
 }
 
 // privateJWKS returns a JSONWebKeySet containing the public and private portions of provided keys

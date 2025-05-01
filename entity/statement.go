@@ -17,6 +17,7 @@ const (
 	FederationEntity EntityTypeIdentifier = "federation_entity"
 	ACMERequestor    EntityTypeIdentifier = "acme_requestor"
 	ACMEIssuer       EntityTypeIdentifier = "acme_issuer"
+	ISRGExtensions   EntityTypeIdentifier = "isrg_extensions"
 )
 
 // EntityStatement is an OIDF Entity Statement
@@ -57,7 +58,7 @@ func signatureKeyID(signature string, expectedType string) (*string, *jose.JSONW
 		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512,
 	})
 	if err != nil {
-		return nil, nil, errors.Errorf("failed to validate JWS signature: %w", err)
+		return nil, nil, errors.Errorf("failed to parse JWS signature: %w", err)
 	}
 
 	if len(jws.Signatures) > 1 {
@@ -81,7 +82,28 @@ func signatureKeyID(signature string, expectedType string) (*string, *jose.JSONW
 // using one of the keys in the provided JWKS, or with a key inside the payload (in which case the
 // payload is an entity configuration).
 func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*EntityStatement, error) {
-	kid, jws, err := signatureKeyID(signature, EntityStatementHeaderType)
+	payload, err := ValidateEntityStatementReturningPayload(signature, EntityStatementHeaderType, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	return &payload.EntityStatement, nil
+}
+
+// EntityStatementPayload is a validated, decoded ES plus the raw JSON payload so that it can be
+// decoded into things besides an EntityStatement.
+type EntityStatementPayload struct {
+	EntityStatement
+	Payload []byte `json:"-"`
+}
+
+// ValidateEntityStatement validates that the provided signature is a well formed JSON web signature
+// whose payload is a well formed OpenID Federation entity statement. The JWS signature is validated
+// using one of the keys in the provided JWKS, or with a key inside the payload (in which case the
+// payload is an entity configuration). The entity statement as well as the validated JWS payload
+// are returned.
+func ValidateEntityStatementReturningPayload(signature string, expectedHeaderType string, keys *jose.JSONWebKeySet) (*EntityStatementPayload, error) {
+	kid, jws, err := signatureKeyID(signature, expectedHeaderType)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +160,7 @@ func ValidateEntityStatement(signature string, keys *jose.JSONWebKeySet) (*Entit
 		}
 	}
 
-	return &trustedEntityStatement, nil
+	return &EntityStatementPayload{EntityStatement: trustedEntityStatement, Payload: entityStatementBytes}, nil
 }
 
 // FindMetadata finds metadata for the specified entity type in the EntityStatement and decodes it
@@ -207,12 +229,21 @@ type FederationEntityMetadata struct {
 	FetchEndpoint   string `json:"federation_fetch_endpoint"`
 	ListEndpoint    string `json:"federation_list_endpoint"`
 	ResolveEndpoint string `json:"federation_resolve_endpoint"`
+}
 
-	// Non-standard endpoints
-	SubordinationEndpoint string `json:"federation_subordination_endpoint"`
-	IsTrustedEndpoint     string `json:"federation_is_trusted_endpoint"`
-	SignChallengeEndpoint string `json:"federation_sign_challenge_endpoint"`
-	// TODO(timg): various other endpoints
+// ISRGExtensionsEntityMetadata represents metadata for an "isrg_extensions" entity, an ad-hoc
+// defined entity type containing extra, non-standard endpoints used in satisfying ACME challenges
+// and test coordination.
+type ISRGExtensionsEntityMetadata struct {
+	// SignChallengeEndpoint is an endpoint which can be used to satisfy openidfederation01 ACME
+	// challenges.
+	SignChallengeEndpoint string `json:"acme_sign_challenge_endpoint"`
+}
+
+func DefaultISRGExtensionsEntityMetadata(base string) ISRGExtensionsEntityMetadata {
+	return ISRGExtensionsEntityMetadata{
+		SignChallengeEndpoint: fmt.Sprintf("%s%s", base, FederationSignChallengeEndpoint),
+	}
 }
 
 // ACMEIssuerMetadata describes an ACME issuer entity in an OpenID Federation
