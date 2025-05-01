@@ -200,7 +200,7 @@ func (es *EntityStatement) VerifyChallenge(signedChallenge string, token string)
 		return fmt.Errorf("entity is not an ACME requestor: %w", err)
 	}
 
-	verificationKeys := acmeRequestorMetadata.CertifiableKeys.Key(*kid)
+	verificationKeys := acmeRequestorMetadata.ChallengeSigningKeys.Key(*kid)
 	if len(verificationKeys) != 1 {
 		return errors.Errorf("found no or multiple keys in JWKS matching header kid %s", *kid)
 	}
@@ -260,5 +260,5 @@ type ACMEIssuerMetadata struct {
 // ACMERequestorMetadata
 // https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.4.2
 type ACMERequestorMetadata struct {
-	CertifiableKeys *jose.JSONWebKeySet `json:"jwks"`
+	ChallengeSigningKeys *jose.JSONWebKeySet `json:"jwks"`
 }

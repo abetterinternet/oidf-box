@@ -347,9 +347,9 @@ func (e *Entity) entityConfiguration() EntityStatement {
 	}
 
 	if len(e.acmeRequestorKeys.Keys) > 0 {
-		publicACMERequestorKeys := publicJWKS(&e.acmeRequestorKeys)
+		publicACMERequestorKeys := PublicJWKS(&e.acmeRequestorKeys)
 		metadata[ACMERequestor] = ACMERequestorMetadata{
-			CertifiableKeys: &publicACMERequestorKeys,
+			ChallengeSigningKeys: &publicACMERequestorKeys,
 		}
 	}
 
@@ -371,7 +371,7 @@ func (e *Entity) entityConfiguration() EntityStatement {
 		Subject:              e.Identifier,
 		IssuedAt:             float64(time.Now().Unix()),
 		Expiration:           float64(time.Now().Unix() + 3600), // valid for 1 hour
-		FederationEntityKeys: publicJWKS(&e.federationEntityKeys),
+		FederationEntityKeys: PublicJWKS(&e.federationEntityKeys),
 		Metadata:             metadata,
 		AuthorityHints:       superiors,
 	}
@@ -821,24 +821,25 @@ func (e *Entity) signChallengeHandler(w http.ResponseWriter, r *http.Request) (e
 	return nil, http.StatusOK
 }
 
-func GenerateCertifiableKeys() (*jose.JSONWebKeySet, error) {
-	// Generate the keys this entity may certify. Hard code one RSA key, one EC key.
-	rsaACMERequestorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+// GenerateACMEChallengeSigningKeys generates some keys that can be used to satisfy ACME OpenID
+// Federation challenges.Hard codeed to generate one RSA key, one EC key.
+func GenerateACMEChallengeSigningKeys() (*jose.JSONWebKeySet, error) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, errors.Errorf("failed to generate RSA key to certify: %w", err)
+		return nil, errors.Errorf("failed to generate RSA key for challenge signing: %w", err)
 	}
 
-	ecACMERequestorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, errors.Errorf("failed to generate P256 key to certify: %w", err)
+		return nil, errors.Errorf("failed to generate P256 key for challenge signing: %w", err)
 	}
 
-	acmeRequestorKeys, err := privateJWKS([]any{rsaACMERequestorKey, ecACMERequestorKey})
+	keys, err := privateJWKS([]any{rsaKey, ecKey})
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct JWKS for keys to certify: %w", err)
+		return nil, fmt.Errorf("failed to construct JWKS for challenge signing keys: %w", err)
 	}
 
-	return &acmeRequestorKeys, err
+	return &keys, err
 }
 
 // privateJWKS returns a JSONWebKeySet containing the public and private portions of provided keys
@@ -874,8 +875,8 @@ func privateJWKS(keys []any) (jose.JSONWebKeySet, error) {
 	return privateJWKS, nil
 }
 
-// publicJWKS returns a JSONWebKeySet containing only the public portion of jwks.
-func publicJWKS(jwks *jose.JSONWebKeySet) jose.JSONWebKeySet {
+// PublicJWKS returns a JSONWebKeySet containing only the public portion of jwks.
+func PublicJWKS(jwks *jose.JSONWebKeySet) jose.JSONWebKeySet {
 	publicJWKS := jose.JSONWebKeySet{}
 	for _, jsonWebKey := range jwks.Keys {
 		publicJWKS.Keys = append(publicJWKS.Keys, jsonWebKey.Public())

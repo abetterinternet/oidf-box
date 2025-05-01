@@ -93,7 +93,7 @@ func TestACMERequestor(t *testing.T) {
 
 	// TODO(timg): We should check this more rigorously but there's no
 	// convenient .Equals on jose.JSONWebKeySet
-	if requestorMetadata.CertifiableKeys == nil {
+	if requestorMetadata.ChallengeSigningKeys == nil {
 		t.Errorf("no certifiable keys in requestor metadata")
 	}
 

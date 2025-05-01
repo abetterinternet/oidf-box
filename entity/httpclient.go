@@ -258,18 +258,31 @@ func (fe *FederationEndpoints) IsTrusted(otherEntity Identifier) ([]EntityStatem
 	return trustChain, nil
 }
 
-type ResolveResponse struct {
+// resolveHTTPResponse is the response to a federation resolve request, on the wire.
+type resolveHTTPResponse struct {
 	EntityStatement
 	TrustChain []string `json:"trust_chain"`
 }
 
+// ResolveResponse is the response to a federation resolve request.
+type ResolveResponse struct {
+	EntityStatement
+	EntityConfiguration EntityStatement
+	TrustChain          []EntityStatement
+}
+
 func (fe *FederationEndpoints) Resolve(
 	subject Identifier,
-	trustAnchor Identifier,
+	trustAnchors []Identifier,
 	entityTypes []EntityTypeIdentifier,
 ) (*ResolveResponse, error) {
 	if fe.resolveEndpoint == nil {
 		return nil, errors.Errorf("no resolve endpoint in entity metadata")
+	}
+
+	trustAnchorStrings := []string{}
+	for _, trustAnchor := range trustAnchors {
+		trustAnchorStrings = append(trustAnchorStrings, trustAnchor.String())
 	}
 
 	entityTypeStrings := []string{}
@@ -282,7 +295,7 @@ func (fe *FederationEndpoints) Resolve(
 		"application/resolve-response+jwt",
 		map[string][]string{
 			QueryParamSub:         {subject.String()},
-			QueryParamTrustAnchor: {trustAnchor.String()},
+			QueryParamTrustAnchor: trustAnchorStrings,
 			QueryParamEntityType:  entityTypeStrings,
 		},
 	)
@@ -299,7 +312,7 @@ func (fe *FederationEndpoints) Resolve(
 		return nil, errors.Errorf("failed to validate entity statement: %w", err)
 	}
 
-	var resolveResponse ResolveResponse
+	var resolveResponse resolveHTTPResponse
 	if err := json.Unmarshal(validatedPayload.Payload, &resolveResponse); err != nil {
 		return nil, errors.Errorf("could not unmarshal resolve resolve: %w", err)
 	}
@@ -326,14 +339,26 @@ func (fe *FederationEndpoints) Resolve(
 
 	// The remaining elements are a chain of subordinate statements, ending in an EC for the trust
 	// anchor. Walk the trust chain backward (starting at the trust anchor), until we hit the end,
-	// validating signatures along the way and checking that the subject of the end entity is right.
+	// validating signatures along the way.
 	trustChain := resolveResponse.TrustChain[1:]
 	slices.Reverse(trustChain)
 	var lastKeys *jose.JSONWebKeySet
+	// Gather validated entity statements in trustChainES
+	trustChainES := []EntityStatement{}
 	for i, jws := range trustChain {
 		entityStatement, err := ValidateEntityStatement(jws, lastKeys)
 		if err != nil {
 			return nil, err
+		}
+		if i == 0 {
+			// Beginning of the iterator. Check that the trust anchor from the resolver is among the
+			// ones we trust.
+			if !slices.Contains(trustAnchors, entityStatement.Subject) {
+				return nil, errors.Errorf(
+					"trust anchor in resolved trust chain '%s' is not trusted",
+					entityStatement.Subject.String(),
+				)
+			}
 		}
 		lastKeys = &entityStatement.FederationEntityKeys
 
@@ -347,9 +372,19 @@ func (fe *FederationEndpoints) Resolve(
 				)
 			}
 		}
-	}
 
-	return &resolveResponse, nil
+		trustChainES = append(trustChainES, *entityStatement)
+	}
+	// Reverse the slice of validated entity statements so we can given the caller a trust chain
+	// where the 0th element is the end entity, which is what they'd expect given OIDF's
+	// specification of a trust chain.
+	slices.Reverse(trustChainES)
+
+	return &ResolveResponse{
+		EntityStatement:     resolveResponse.EntityStatement,
+		EntityConfiguration: *subjectEC,
+		TrustChain:          trustChainES,
+	}, nil
 }
 
 func (fe *FederationEndpoints) SignChallenge(token string) (string, error) {

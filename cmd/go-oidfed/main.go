@@ -109,23 +109,33 @@ func main() {
 		[]*fedentities.FedEntity{intermediate},
 	)
 
-	certifiableKeys, err := entity.GenerateCertifiableKeys()
+	requestorChallengeSolver, err := oidf01.NewSolverAndServe("8006")
 	if err != nil {
-		log.Fatalf("failed to generate ACME challenge signing keys: %s", err)
+		log.Fatalf("failed to setup ACME challenge solver: %s", err)
 	}
-	// TODO: bind port 8006 and serve challenge signing there
 	requestor, _ := makeEntity("requestor", "8004",
 		// extraMetadata
 		map[string]any{
 			string(entity.ACMERequestor): entity.ACMERequestorMetadata{
-				CertifiableKeys: certifiableKeys,
+				ChallengeSigningKeys: requestorChallengeSolver.ChallengeSigningPublicKeys(),
 			},
 			string(entity.ISRGExtensions): entity.DefaultISRGExtensionsEntityMetadata("http://localhost:8006"),
 		},
 		[]*fedentities.FedEntity{intermediate},
 	)
+
+	otherLeafChallengeSolver, err := oidf01.NewSolverAndServe("8007")
+	if err != nil {
+		log.Fatalf("failed to setup ACME challenge solver: %s", err)
+	}
 	otherLeaf, _ := makeEntity("other-leaf", "8005",
-		nil, // extraMetadata
+		// extraMetadata
+		map[string]any{
+			string(entity.ACMERequestor): entity.ACMERequestorMetadata{
+				ChallengeSigningKeys: otherLeafChallengeSolver.ChallengeSigningPublicKeys(),
+			},
+			string(entity.ISRGExtensions): entity.DefaultISRGExtensionsEntityMetadata("http://localhost:8007"),
+		},
 		[]*fedentities.FedEntity{intermediate},
 	)
 
@@ -198,22 +208,6 @@ func main() {
 		}
 		val.endpoints = client
 
-		subordinates, err := client.ListSubordinates([]entity.EntityTypeIdentifier{}, false)
-		if err != nil {
-			log.Fatalf("failed to list subordinates: %s", err)
-		}
-
-		log.Printf("subordinates for %s:\n", label)
-		for _, sub := range subordinates {
-			log.Printf("%s\n", sub.String())
-			subordinateStatement, err := client.SubordinateStatement(sub)
-			if err != nil {
-				log.Fatalf("failed to get subordinate statement for '%s': %s", sub.String(), err)
-			}
-
-			log.Printf("%+v\n", subordinateStatement)
-		}
-
 		// Write map value back to map -- Go doesn't let you mutate map members while you iterate
 		entities[label] = val
 	}
@@ -233,7 +227,7 @@ func main() {
 	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.2
 	resolveResponse, err := entities["requestor"].endpoints.Resolve(
 		entities["issuer"].identifier,
-		entities["trust anchor"].identifier,
+		entities["requestor"].endpoints.Entity.AuthorityHints,
 		[]entity.EntityTypeIdentifier{
 			entity.FederationEntity,
 			entity.ISRGExtensions,
@@ -331,7 +325,7 @@ func main() {
 	}
 
 	if !slices.Contains(oidfIdentifiers, entities["requestor"].identifier) ||
-		!slices.Contains(oidfIdentifiers, entities["other-leaf"].identifier) ||
+		!slices.Contains(oidfIdentifiers, entities["other leaf"].identifier) ||
 		len(oidfIdentifiers) != 2 {
 		log.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
 	}
