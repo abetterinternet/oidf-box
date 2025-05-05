@@ -29,7 +29,8 @@ import (
 	"github.com/zachmann/go-oidfed/pkg/fedentities/storage"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/tgeoghegan/oidf-box/entity"
+	//"github.com/tgeoghegan/oidf-box/entity"
+	"github.com/tgeoghegan/oidf-box/oidfclient"
 	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
 )
 
@@ -100,7 +101,7 @@ func main() {
 	issuer, _ := makeEntity("issuer", "8003",
 		// extraMetadata
 		map[string]any{
-			string(entity.ACMEIssuer): entity.ACMEIssuerMetadata{
+			oidf01.ACMEIssuerEntityType: oidf01.ACMEIssuerMetadata{
 				// Corresponds to pebble/test/config/pebble-config.json
 				// TODO(timg) this should be configurable
 				Directory: "https://0.0.0.0:14000/dir",
@@ -116,10 +117,11 @@ func main() {
 	requestor, _ := makeEntity("requestor", "8004",
 		// extraMetadata
 		map[string]any{
-			string(entity.ACMERequestor): entity.ACMERequestorMetadata{
+			oidf01.ACMERequestorEntityType: oidf01.ACMERequestorMetadata{
 				ChallengeSigningKeys: requestorChallengeSolver.ChallengeSigningPublicKeys(),
 			},
-			string(entity.ISRGExtensions): entity.DefaultISRGExtensionsEntityMetadata("http://localhost:8006"),
+			oidf01.ACMEChallengeSolverEntityType: oidf01.DefaultACMEChallengeSolverEntityMetadata(
+				"http://localhost:8006"),
 		},
 		[]*fedentities.FedEntity{intermediate},
 	)
@@ -131,10 +133,11 @@ func main() {
 	otherLeaf, _ := makeEntity("other-leaf", "8005",
 		// extraMetadata
 		map[string]any{
-			string(entity.ACMERequestor): entity.ACMERequestorMetadata{
+			oidf01.ACMERequestorEntityType: oidf01.ACMERequestorMetadata{
 				ChallengeSigningKeys: otherLeafChallengeSolver.ChallengeSigningPublicKeys(),
 			},
-			string(entity.ISRGExtensions): entity.DefaultISRGExtensionsEntityMetadata("http://localhost:8007"),
+			oidf01.ACMEChallengeSolverEntityType: oidf01.DefaultACMEChallengeSolverEntityMetadata(
+				"http://localhost:8007"),
 		},
 		[]*fedentities.FedEntity{intermediate},
 	)
@@ -175,9 +178,9 @@ func main() {
 
 	entities := map[string]struct {
 		port       string
-		identifier entity.Identifier
+		identifier string
 		entity     *fedentities.FedEntity
-		endpoints  *entity.FederationEndpoints
+		endpoints  *oidfclient.FederationEndpoints
 	}{
 		"trust anchor": {port: "8001", entity: trustAnchor},
 		"intermediate": {port: "8002", entity: intermediate},
@@ -195,14 +198,10 @@ func main() {
 		}(label, val.port, val.entity)
 	}
 
-	oidfClient := entity.NewOIDFClient()
+	oidfClient := oidfclient.NewOIDFClient()
 	for label, val := range entities {
-		identifier, err := entity.NewIdentifier(fmt.Sprintf("http://localhost:%s", val.port))
-		if err != nil {
-			log.Fatalf("failed to create identifier: %s", err)
-		}
-		val.identifier = identifier
-		client, err := oidfClient.NewFederationEndpoints(identifier)
+		val.identifier = fmt.Sprintf("http://localhost:%s", val.port)
+		client, err := oidfClient.NewFederationEndpoints(val.identifier)
 		if err != nil {
 			log.Fatalf("failed to create federation endpoints: %s", err)
 		}
@@ -228,19 +227,15 @@ func main() {
 	resolveResponse, err := entities["requestor"].endpoints.Resolve(
 		entities["issuer"].identifier,
 		entities["requestor"].endpoints.Entity.AuthorityHints,
-		[]entity.EntityTypeIdentifier{
-			entity.FederationEntity,
-			entity.ISRGExtensions,
-			entity.ACMEIssuer,
-		},
+		[]string{oidf01.ACMEIssuerEntityType},
 	)
 	if err != nil {
 		log.Fatalf("failed to evaluate trust in ACME issuer: %s", err)
 	}
 
-	var issuerMetadata entity.ACMEIssuerMetadata
-	if err := resolveResponse.FindMetadata(entity.ACMEIssuer, &issuerMetadata); err != nil {
-		log.Fatalf("ACME issuer metadata missing: %s", err)
+	var acmeIssuerMetadata oidf01.ACMEIssuerMetadata
+	if err := resolveResponse.Metadata.FindEntityMetadata(oidf01.ACMEIssuerEntityType, &acmeIssuerMetadata); err != nil {
+		log.Fatalf("no metadata for entity type '%s' in resolve response: %s", oidf01.ACMEIssuerEntityType, err)
 	}
 
 	// Create a user. New accounts need an email and private key to start.
@@ -256,7 +251,7 @@ func main() {
 
 	config := lego.NewConfig(&demoUser)
 
-	config.CADirURL = issuerMetadata.Directory
+	config.CADirURL = acmeIssuerMetadata.Directory
 	config.Certificate.KeyType = certcrypto.RSA2048
 
 	// Disable TLS verification as Pebble's cert is self-signed
@@ -277,7 +272,7 @@ func main() {
 
 	// Wire up the requestor and the other leaf as challenge solvers
 	if err = client.Challenge.SetOpenIDFederation01Solver(oidf01challenge.Solver{
-		Entities: []*entity.FederationEndpoints{
+		Entities: []*oidfclient.FederationEndpoints{
 			entities["requestor"].endpoints,
 			entities["other leaf"].endpoints,
 		},
@@ -330,8 +325,7 @@ func main() {
 		log.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
 	}
 
-	fmt.Printf("Identifiers in end entity cert: %s, %s\n",
-		oidfIdentifiers[0].String(), oidfIdentifiers[1].String())
+	fmt.Printf("Identifiers in end entity cert: %s, %s\n", oidfIdentifiers[0], oidfIdentifiers[1])
 }
 
 func mustFederationEntitySigningKey() *ecdsa.PrivateKey {
@@ -364,7 +358,7 @@ func (c NoopEntityChecker) Check(entityConfiguration *oidf.EntityStatement, enti
 	return true, 0, nil
 }
 
-func setupPebble(issuer *entity.FederationEndpoints) (func(), error) {
+func setupPebble(issuer *oidfclient.FederationEndpoints) (func(), error) {
 	// Log to stdout
 	logger := log.New(os.Stdout, "Pebble ", log.LstdFlags)
 	logger.Printf("Starting Pebble ACME server")

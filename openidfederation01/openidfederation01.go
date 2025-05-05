@@ -9,9 +9,89 @@ import (
 	"encoding/asn1"
 	"slices"
 
-	"github.com/tgeoghegan/oidf-box/entity"
+	"github.com/go-jose/go-jose/v4"
+
 	"github.com/tgeoghegan/oidf-box/errors"
 )
+
+const (
+	// Entity type identifiers for ACME OIDF.
+	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html
+	ACMERequestorEntityType = "acme_requestor"
+	ACMEIssuerEntityType    = "acme_issuer"
+)
+
+// ACMEIssuerMetadata describes an ACME issuer entity in an OpenID Federation
+// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.4.1
+type ACMEIssuerMetadata struct {
+	// The current draft requires that the entire ACME directory appear here, but I argue in the
+	// issue below that it makes more sense to put the directory URI. That's also easier to
+	// implement.
+	// Ideally this would be a url.URL but serializing url.URL sucks!
+	// https://github.com/peppelinux/draft-demarco-acme-openid-federation/issues/60
+	Directory string `json:"directory"`
+}
+
+// ACMERequestorMetadata
+// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.4.2
+type ACMERequestorMetadata struct {
+	ChallengeSigningKeys *jose.JSONWebKeySet `json:"jwks"`
+}
+
+// signatureKeyID parses the provided signature and returns the key ID from its JWS header, as well
+// as the parsed JWS.
+func signatureKeyID(signature string, expectedType string) (*string, *jose.JSONWebSignature, error) {
+	// The JWS header indicates what algorithm it's signed with, but jose requires us to provide a
+	// list of acceptable signing algorithms.
+	// TODO(timg): For now, we'll allow a variety of RSA PKCS1.5 and ECDSA algorithms but this
+	// should be configurable somehow.
+	jws, err := jose.ParseSigned(signature, []jose.SignatureAlgorithm{
+		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512,
+	})
+	if err != nil {
+		return nil, nil, errors.Errorf("failed to parse JWS signature: %w", err)
+	}
+
+	if len(jws.Signatures) > 1 {
+		return nil, nil, errors.Errorf("unexpected multi-signature JWS")
+	}
+
+	headerType, ok := jws.Signatures[0].Header.ExtraHeaders[jose.HeaderType]
+	if !ok || headerType != expectedType {
+		return nil, nil, errors.Errorf("wrong or no type in JWS header: %+v", jws.Signatures[0])
+	}
+
+	if jws.Signatures[0].Header.KeyID == "" {
+		return nil, nil, errors.Errorf("JWS header must contain kid")
+	}
+
+	return &jws.Signatures[0].Header.KeyID, jws, nil
+}
+
+// VerifyChallenge verifies if the signedChallenge is a valid JWS over the provided token, using
+// the challenge signing keys in the ACME requestor metadata.
+func (m *ACMERequestorMetadata) VerifyChallenge(signedChallenge string, token string) error {
+	kid, jws, err := signatureKeyID(signedChallenge, SignedChallengeHeaderType)
+	if err != nil {
+		return err
+	}
+
+	verificationKeys := m.ChallengeSigningKeys.Key(*kid)
+	if len(verificationKeys) != 1 {
+		return errors.Errorf("found no or multiple keys in JWKS matching header kid %s", *kid)
+	}
+
+	challenge, err := jws.Verify(verificationKeys[0])
+	if err != nil {
+		return errors.Errorf("failed to validate challenge signature: %w", err)
+	}
+
+	if string(challenge) != token {
+		return errors.Errorf("requestor challenge response signed over wrong token: %s", challenge)
+	}
+
+	return nil
+}
 
 // ChallengeResponse is the payload POSTed to an ACME challenge for an openid-federation-01 challenge.
 // https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.6
@@ -47,7 +127,7 @@ type otherName struct {
 
 // GenerateCSRWithEntityIdentifiers constructs a CSR with the provided identifiers as otherName SANs
 // per the acme-openid draft.
-func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers []entity.Identifier) ([]byte, error) {
+func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers []string) ([]byte, error) {
 	// We are constructing a PkixExtension whose value is a SubjectAltName. This is tricky to do
 	// because encoding/asn1 does not have amazing support for ASN.1 CHOICE. RFC 5280 defines
 	// (https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.1.6):
@@ -72,7 +152,7 @@ func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers 
 		// 5280's definition of OtherName.value. Straightforward so far.
 		otherName := otherName{
 			TypeID: EntityOID,
-			Value:  identifier.String(),
+			Value:  identifier,
 		}
 
 		// Now, we want to build a GeneralNames value from the list of OtherName. Ideally we'd
@@ -87,16 +167,17 @@ func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers 
 			return nil, errors.Errorf("failed to marshal otherName to ASN.1: %w", err)
 		}
 
+		// The content octets of a sequence is the concatenation of the DER encoding of each
+		// element, so we simply append each encoded otherName. We'll join them into a single byte
+		// slice later.
 		generalNamesContentOctets = append(generalNamesContentOctets, encodedOtherName)
 	}
 
 	// PKIX extensions are opaque OCTET STRINGs so that implementations can gracefully ignore ones
 	// they don't support.
 	//
-	// We need to construct the encoding of a sequence of GeneralName values. The content octets of
-	// a sequence is the concatenation of the DER encoding of each element -- that's exactly what we
-	// have in generalNamesContentOctets. To make it a well-formed sequence, we need to prefix it
-	// with appropriate tag and length bytes, for which we use asn1.RawValue.
+	// To make generalNamesContentOctets into a well-formed DER sequence, we need to prefix it with
+	// appropriate tag and length bytes, for which we use asn1.RawValue.
 	joined := bytes.Join(generalNamesContentOctets, []byte{})
 	marshaledExtension, err := asn1.Marshal(asn1.RawValue{
 		Tag:        asn1.TagSequence,
@@ -137,7 +218,10 @@ func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers 
 	} else {
 		for _, expectedIdentifier := range identifiers {
 			if !slices.Contains(parsedIdentifiers, expectedIdentifier) {
-				return nil, errors.Errorf("Identifier missing after round trip: %s -> %v", expectedIdentifier.String(), parsedIdentifiers)
+				return nil, errors.Errorf(
+					"Identifier missing after round trip: %s -> %v",
+					expectedIdentifier, parsedIdentifiers,
+				)
 			}
 		}
 		if len(parsedIdentifiers) != len(identifiers) {
@@ -150,24 +234,24 @@ func GenerateCSRWithEntityIdentifiers(privateKey crypto.PrivateKey, identifiers 
 
 // EntityIdentifiersFromCSR validates that the CSR conforms to the acme-openid draft and returns the
 // OpenID Federation entity identifiers therein.
-func EntityIdentifiersFromCSR(csr *x509.CertificateRequest) ([]entity.Identifier, error) {
+func EntityIdentifiersFromCSR(csr *x509.CertificateRequest) ([]string, error) {
 	return entityIdentifiersFromExtensions(csr.Subject, csr.Extensions)
 }
 
 // EntityIdentifiersFromCertificate validates that the certificate conforms to the acme-openid draft
 // and returns the OpenID Federation entity identifiers therein.
-func EntityIdentifiersFromCertificate(cert *x509.Certificate) ([]entity.Identifier, error) {
+func EntityIdentifiersFromCertificate(cert *x509.Certificate) ([]string, error) {
 	return entityIdentifiersFromExtensions(cert.Subject, cert.Extensions)
 }
 
-func entityIdentifiersFromExtensions(subject pkix.Name, extensions []pkix.Extension) ([]entity.Identifier, error) {
+func entityIdentifiersFromExtensions(subject pkix.Name, extensions []pkix.Extension) ([]string, error) {
 	if subject.String() != "" {
 		// TODO(timg): there must be a better way to check that a pkix.Name is empty/zero
-		return []entity.Identifier{}, errors.Errorf("Subject is present")
+		return []string{}, errors.Errorf("Subject is present")
 	}
 
 	sawSANExtension := false
-	identifiers := []entity.Identifier{}
+	identifiers := []string{}
 	for _, extension := range extensions {
 		// Ignore extensions that aren't SANs
 		if !extension.Id.Equal(SubjectAlternativeNameOID) {
@@ -205,17 +289,12 @@ func entityIdentifiersFromExtensions(subject pkix.Name, extensions []pkix.Extens
 				return nil, errors.Errorf("otherName has wrong object identifier for OpenID Federation entity")
 			}
 
-			identifier, err := entity.NewIdentifier(name.Value)
-			if err != nil {
-				return nil, errors.Errorf("invalid identifier in SAN '%s': %w", name.Value, err)
-			}
-
-			identifiers = append(identifiers, identifier)
+			identifiers = append(identifiers, name.Value)
 		}
 	}
 
 	if len(identifiers) == 0 {
-		return []entity.Identifier{}, errors.Errorf("found no acceptable SAN extensions")
+		return []string{}, errors.Errorf("found no acceptable SAN extensions")
 	}
 
 	return identifiers, nil
