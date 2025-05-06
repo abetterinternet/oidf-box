@@ -2,7 +2,6 @@ package oidfclient
 
 import (
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"

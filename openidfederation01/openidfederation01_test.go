@@ -6,26 +6,18 @@ import (
 	"crypto/x509"
 	"slices"
 	"testing"
-
-	"github.com/tgeoghegan/oidf-box/entity"
 )
 
 func TestCertificateRequest(t *testing.T) {
-	identifier, err := entity.NewIdentifier("https://example.com")
-	if err != nil {
-		t.Fatalf("failed to construct OIDF Identifier: %s", err.Error())
-	}
-	identifier2, err := entity.NewIdentifier("https://example.com:8080")
-	if err != nil {
-		t.Fatalf("failed to construct OIDF identifie: %s", err.Error())
-	}
+	identifier := "https://example.com"
+	identifier2 := "https://example.com:8080"
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate key: %s", err.Error())
 	}
 
-	csr, err := GenerateCSRWithEntityIdentifiers(key, []entity.Identifier{identifier, identifier2})
+	csr, err := GenerateCSRWithEntityIdentifiers(key, []string{identifier, identifier2})
 	if err != nil {
 		t.Fatalf("failed to generate CSR: %s", err.Error())
 	}

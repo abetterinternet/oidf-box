@@ -27,9 +27,7 @@ import (
 	oidf "github.com/zachmann/go-oidfed/pkg"
 	"github.com/zachmann/go-oidfed/pkg/fedentities"
 	"github.com/zachmann/go-oidfed/pkg/fedentities/storage"
-	yaml "gopkg.in/yaml.v3"
 
-	//"github.com/tgeoghegan/oidf-box/entity"
 	"github.com/tgeoghegan/oidf-box/oidfclient"
 	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
 )
@@ -39,6 +37,19 @@ type DemoUser struct {
 	Email        string
 	Registration *registration.Resource
 	key          crypto.PrivateKey
+}
+
+func newDemoUser() DemoUser {
+	// Create a user. New accounts need an email and private key to start.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return DemoUser{
+		Email: "you@example.com",
+		key:   privateKey,
+	}
 }
 
 func (u *DemoUser) GetEmail() string {
@@ -146,7 +157,7 @@ func main() {
 	// - the intermediate to the trust anchor
 	// - the issuer, requestor and other leaf entity to the intermediate
 	// n.b. this does _not_ use the HTTP enroll endpoint, but instead writes directly to the TA and
-	// intermediate's subordinate storage.
+	// intermediate's subordinate storage, just like go-oidfed/cli/ta does.
 	trustAnchorSubordinateStorage.Write(intermediate.FederationEntity.EntityID,
 		storage.SubordinateInfo{
 			JWKS:     intermediate.FederationEntity.JWKS(),
@@ -176,6 +187,7 @@ func main() {
 		},
 	)
 
+	oidfClient := oidfclient.NewOIDFClient()
 	entities := map[string]struct {
 		port       string
 		identifier string
@@ -196,10 +208,6 @@ func main() {
 				log.Fatalf("failed to serve %s Fed endpoints: %s", label, err)
 			}
 		}(label, val.port, val.entity)
-	}
-
-	oidfClient := oidfclient.NewOIDFClient()
-	for label, val := range entities {
 		val.identifier = fmt.Sprintf("http://localhost:%s", val.port)
 		client, err := oidfClient.NewFederationEndpoints(val.identifier)
 		if err != nil {
@@ -234,21 +242,14 @@ func main() {
 	}
 
 	var acmeIssuerMetadata oidf01.ACMEIssuerMetadata
-	if err := resolveResponse.Metadata.FindEntityMetadata(oidf01.ACMEIssuerEntityType, &acmeIssuerMetadata); err != nil {
+	if err := resolveResponse.Metadata.FindEntityMetadata(
+		oidf01.ACMEIssuerEntityType,
+		&acmeIssuerMetadata,
+	); err != nil {
 		log.Fatalf("no metadata for entity type '%s' in resolve response: %s", oidf01.ACMEIssuerEntityType, err)
 	}
 
-	// Create a user. New accounts need an email and private key to start.
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	demoUser := DemoUser{
-		Email: "you@example.com",
-		key:   privateKey,
-	}
-
+	demoUser := newDemoUser()
 	config := lego.NewConfig(&demoUser)
 
 	config.CADirURL = acmeIssuerMetadata.Directory
@@ -344,18 +345,6 @@ func mustEntityStorage(entityLabel string) (storage.SubordinateStorageBackend, s
 	storageBackend := storage.NewFileStorage(backendStoragePath)
 
 	return storageBackend.SubordinateStorage(), storageBackend.TrustMarkedEntitiesStorage()
-}
-
-// NoopEntityChecker allows any entity to be subordinated.
-type NoopEntityChecker struct{}
-
-// UnmarshalYAML implements fedentities.EntityChecker.
-func (c NoopEntityChecker) UnmarshalYAML(value *yaml.Node) error {
-	panic("unimplemented")
-}
-
-func (c NoopEntityChecker) Check(entityConfiguration *oidf.EntityStatement, entityTypes []string) (bool, int, *oidf.Error) {
-	return true, 0, nil
 }
 
 func setupPebble(issuer *oidfclient.FederationEndpoints) (func(), error) {

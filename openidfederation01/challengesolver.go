@@ -111,7 +111,6 @@ func (s *ChallengeSolver) ChallengeSigningPublicKeys() *jose.JSONWebKeySet {
 
 // SignChallenge constructs a JWS containing a signature over token using one of the entity's
 // acme_requestor keys.
-// TODO: should/could move this over to openidfederation01 module
 func (s *ChallengeSolver) SignChallenge(token string) (*jose.JSONWebSignature, error) {
 	challengeSigner, err := jose.NewSigner(
 		jose.SigningKey{
