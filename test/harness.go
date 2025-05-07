@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/go-acme/lego/v4/certcrypto"
@@ -58,15 +60,62 @@ func (u *DemoUser) GetPrivateKey() crypto.PrivateKey {
 	return u.key
 }
 
-func makeEntity(t *testing.T, label, port string, extraMetadata map[string]any, superiors []*fedentities.FedEntity) (*fedentities.FedEntity, storage.SubordinateStorageBackend) {
+type TestEntity struct {
+	Label              string
+	FedEntity          *fedentities.FedEntity
+	SubordinateStorage storage.SubordinateStorageBackend
+	Endpoints          *oidfclient.FederationEndpoints
+	ChallengeSolver    *oidf01.ChallengeSolver
+
+	// listener may be a bound port on which requests for OpenID Federation API (i.e. entity
+	// configurations or other federation endpoints) are listened to
+	listener net.Listener
+	// done is a channel sent on when the HTTP server is torn down
+	done chan struct{}
+}
+
+func mustEntity(
+	t *testing.T,
+	oidfClient *oidfclient.HTTPClient,
+	label string,
+	extraMetadata map[string]any,
+	acmeRequestor bool,
+	superiors []*TestEntity,
+) *TestEntity {
 	authorityHints := []string{}
 	for _, superior := range superiors {
-		authorityHints = append(authorityHints, superior.FederationEntity.EntityID)
+		authorityHints = append(authorityHints, superior.FedEntity.FederationEntity.EntityID)
 	}
 
-	entityID := fmt.Sprintf("http://localhost:%s", port)
+	// Bind any available port, and then construct an entity ID with that port
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("failed to bind port: %s", err)
+	}
+	addr, err := net.ResolveTCPAddr(listener.Addr().Network(), listener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to resolve TCP address: %s", err)
+	}
+
+	entityID := fmt.Sprintf("http://localhost:%d", addr.Port)
 
 	subordinateStorage, trustMarkStorage := mustEntityStorage(t, label)
+
+	var challengeSolver *oidf01.ChallengeSolver
+	if acmeRequestor {
+		challengeSolver, err = oidf01.NewSolver(entityID)
+		if err != nil {
+			t.Fatalf("failed to setup ACME challenge solver: %s", err)
+		}
+
+		if extraMetadata == nil {
+			extraMetadata = make(map[string]any)
+		}
+
+		extraMetadata[oidf01.ACMERequestorEntityType] = oidf01.ACMERequestorMetadata{
+			ChallengeSigningKeys: challengeSolver.ChallengeSigningPublicKeys(),
+		}
+	}
 
 	entity, err := fedentities.NewFedEntity(
 		entityID,
@@ -91,7 +140,54 @@ func makeEntity(t *testing.T, label, port string, extraMetadata map[string]any, 
 		fedentities.EndpointConf{Path: "/list"}, subordinateStorage, trustMarkStorage)
 	entity.AddResolveEndpoint(fedentities.EndpointConf{Path: "/resolve"})
 
-	return entity, subordinateStorage
+	testEntity := TestEntity{
+		FedEntity:          entity,
+		SubordinateStorage: subordinateStorage,
+		ChallengeSolver:    challengeSolver,
+		listener:           listener,
+		done:               make(chan struct{}),
+	}
+
+	for _, superior := range superiors {
+		superior.AddSubordinate(&testEntity)
+	}
+
+	go func() {
+		t.Logf("serve entity '%s' at %s", entityID, listener.Addr().String())
+		if err := http.Serve(testEntity.listener, entity.HttpHandlerFunc()); err != nil &&
+			!strings.Contains(err.Error(), "use of closed network connection") {
+			t.Log(err)
+		}
+
+		testEntity.done <- struct{}{}
+	}()
+
+	endpoints, err := oidfClient.NewFederationEndpoints(entityID)
+	if err != nil {
+		t.Fatalf("failed to create Federation endpoints client: %s", err)
+	}
+
+	testEntity.Endpoints = endpoints
+
+	return &testEntity
+}
+
+func (e *TestEntity) CleanUp() {
+	if e.listener == nil {
+		return
+	}
+
+	e.listener.Close()
+
+	<-e.done
+}
+
+func (e *TestEntity) AddSubordinate(sub *TestEntity) {
+	e.SubordinateStorage.Write(sub.FedEntity.FederationEntity.EntityID, storage.SubordinateInfo{
+		JWKS:     sub.FedEntity.JWKS(),
+		EntityID: sub.FedEntity.FederationEntity.EntityID,
+		Metadata: sub.FedEntity.Metadata,
+	})
 }
 
 func mustFederationEntitySigningKey(t *testing.T) *ecdsa.PrivateKey {
@@ -236,11 +332,12 @@ func setupLego(t *testing.T, config LegoConfig) *lego.Client {
 	return client
 }
 
+// TestLogWriter is an io.Writer that writes to the testing.T's log.
 type TestLogWriter struct {
 	t *testing.T
 }
 
-// Write implements io.Writer so we can provide a log.Logger to Pebble that outputs to testing.T.Log
+// Write implements io.Writer.
 func (w TestLogWriter) Write(p []byte) (int, error) {
 	w.t.Log(string(p))
 
