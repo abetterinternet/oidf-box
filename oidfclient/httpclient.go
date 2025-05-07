@@ -127,7 +127,7 @@ func (c *HTTPClient) NewFederationEndpoints(identifier string) (*FederationEndpo
 	); err == nil {
 		if acmeChallengeSolverMetadata.SignChallengeEndpoint == "" {
 			return nil, errors.Errorf(
-				"empty sign challenge endpoint '%s' in ACME challenge solver metadata for %s",
+				"empty sign challenge endpoint in ACME challenge solver metadata for %s",
 				identifier,
 			)
 		}
