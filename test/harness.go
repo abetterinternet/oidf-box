@@ -172,7 +172,7 @@ func setupPebble(t *testing.T, issuer *oidfclient.FederationEndpoints) (func(), 
 type LegoConfig struct {
 	RequestorClient  *oidfclient.FederationEndpoints
 	IssuerIdentifier string
-	ChallengeSolvers []*oidfclient.FederationEndpoints
+	ChallengeSolvers []*oidf01.ChallengeSolver
 }
 
 func setupLego(t *testing.T, config LegoConfig) *lego.Client {

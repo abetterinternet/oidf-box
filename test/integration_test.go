@@ -43,7 +43,7 @@ func TestIssuance(t *testing.T) {
 		[]*fedentities.FedEntity{intermediate},
 	)
 
-	requestorChallengeSolver, err := oidf01.NewSolverAndServe("8006")
+	requestorChallengeSolver, err := oidf01.NewSolver("http://localhost:8004")
 	if err != nil {
 		log.Fatalf("failed to setup ACME challenge solver: %s", err)
 	}
@@ -53,13 +53,11 @@ func TestIssuance(t *testing.T) {
 			oidf01.ACMERequestorEntityType: oidf01.ACMERequestorMetadata{
 				ChallengeSigningKeys: requestorChallengeSolver.ChallengeSigningPublicKeys(),
 			},
-			oidf01.ACMEChallengeSolverEntityType: oidf01.DefaultACMEChallengeSolverEntityMetadata(
-				"http://localhost:8006"),
 		},
 		[]*fedentities.FedEntity{intermediate},
 	)
 
-	otherLeafChallengeSolver, err := oidf01.NewSolverAndServe("8007")
+	otherLeafChallengeSolver, err := oidf01.NewSolver("http://localhost:8005")
 	if err != nil {
 		log.Fatalf("failed to setup ACME challenge solver: %s", err)
 	}
@@ -69,8 +67,6 @@ func TestIssuance(t *testing.T) {
 			oidf01.ACMERequestorEntityType: oidf01.ACMERequestorMetadata{
 				ChallengeSigningKeys: otherLeafChallengeSolver.ChallengeSigningPublicKeys(),
 			},
-			oidf01.ACMEChallengeSolverEntityType: oidf01.DefaultACMEChallengeSolverEntityMetadata(
-				"http://localhost:8007"),
 		},
 		[]*fedentities.FedEntity{intermediate},
 	)
@@ -152,9 +148,9 @@ func TestIssuance(t *testing.T) {
 	legoClient := setupLego(t, LegoConfig{
 		RequestorClient:  entities["requestor"].endpoints,
 		IssuerIdentifier: entities["issuer"].identifier,
-		ChallengeSolvers: []*oidfclient.FederationEndpoints{
-			entities["requestor"].endpoints,
-			entities["other leaf"].endpoints,
+		ChallengeSolvers: []*oidf01.ChallengeSolver{
+			requestorChallengeSolver,
+			otherLeafChallengeSolver,
 		},
 	})
 

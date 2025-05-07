@@ -8,11 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
-	"io"
-	"log"
 	"net"
-	"net/http"
-	"strings"
 
 	"github.com/go-jose/go-jose/v4"
 
@@ -20,29 +16,12 @@ import (
 )
 
 const (
-	// Sign challenge endpoint
-	FederationSignChallengeEndpoint = "/sign-challenge"
-	ACMEChallengeSolverEntityType   = "acme-challenge-solver"
-	SignedChallengeHeaderType       = "signed-acme-challenge+jwt"
+	SignedChallengeHeaderType = "signed-acme-challenge+jwt"
 )
-
-// ACMEChallengeSolverEntityMetadata represents metadata for an "isrg_extensions" entity, an ad-hoc
-// defined entity type containing extra, non-standard endpoints used in satisfying ACME challenges
-// and test coordination.
-type ACMEChallengeSolverEntityMetadata struct {
-	// SignChallengeEndpoint is an endpoint which can be used to satisfy openidfederation01 ACME
-	// challenges.
-	SignChallengeEndpoint string `json:"acme_sign_challenge_endpoint"`
-}
-
-func DefaultACMEChallengeSolverEntityMetadata(base string) ACMEChallengeSolverEntityMetadata {
-	return ACMEChallengeSolverEntityMetadata{
-		SignChallengeEndpoint: fmt.Sprintf("%s%s", base, FederationSignChallengeEndpoint),
-	}
-}
 
 // ChallengeSolver solves ACME OpenIDFederation challenges over HTTP
 type ChallengeSolver struct {
+	EntityIdentifier string
 	// challengeSigningKeys is a set of keys that may be used to solve ACME challenges.
 	challengeSigningKeys jose.JSONWebKeySet
 
@@ -54,52 +33,16 @@ type ChallengeSolver struct {
 }
 
 // NewSolver generates keys and creates a ChallengeSolver.
-func NewSolver() (*ChallengeSolver, error) {
+func NewSolver(identifier string) (*ChallengeSolver, error) {
 	challengeSigningKeys, err := GenerateACMEChallengeSigningKeys()
 	if err != nil {
 		return nil, err
 	}
 
-	return &ChallengeSolver{challengeSigningKeys: *challengeSigningKeys}, nil
-}
-
-func NewSolverAndServe(port string) (*ChallengeSolver, error) {
-	solver, err := NewSolver()
-	if err != nil {
-		return nil, err
-	}
-
-	// Listen at whatever port is in the identifier, which may not be right
-	solver.listener, err = net.Listen("tcp", net.JoinHostPort("", port))
-	if err != nil {
-		return nil, errors.Errorf("could not start HTTP server for OIDF EC: %w", err)
-	}
-
-	solver.done = make(chan struct{})
-
-	go func() {
-		mux := http.NewServeMux()
-
-		mux.HandleFunc(FederationSignChallengeEndpoint, func(w http.ResponseWriter, r *http.Request) {
-			if err, status := solver.signChallengeHandler(w, r); err != nil {
-				http.Error(w, err.Error(), status)
-			}
-		})
-
-		httpServer := &http.Server{Handler: mux}
-
-		// Once httpServer is shut down we don't want any lingering connections, so disable KeepAlives.
-		httpServer.SetKeepAlivesEnabled(false)
-
-		if err := httpServer.Serve(solver.listener); err != nil &&
-			!strings.Contains(err.Error(), "use of closed network connection") {
-			log.Println(err)
-		}
-
-		solver.done <- struct{}{}
-	}()
-
-	return solver, nil
+	return &ChallengeSolver{
+		EntityIdentifier:     identifier,
+		challengeSigningKeys: *challengeSigningKeys,
+	}, nil
 }
 
 // ChallengeSigningPublicKeys returns a JSONWebKeySet containing only the public portion of the
@@ -111,7 +54,7 @@ func (s *ChallengeSolver) ChallengeSigningPublicKeys() *jose.JSONWebKeySet {
 
 // SignChallenge constructs a JWS containing a signature over token using one of the entity's
 // acme_requestor keys.
-func (s *ChallengeSolver) SignChallenge(token string) (*jose.JSONWebSignature, error) {
+func (s *ChallengeSolver) SignChallenge(token string) (*string, error) {
 	challengeSigner, err := jose.NewSigner(
 		jose.SigningKey{
 			// TODO: probably should validate that the Algorithm field is valid somehow
@@ -137,38 +80,12 @@ func (s *ChallengeSolver) SignChallenge(token string) (*jose.JSONWebSignature, e
 		return nil, errors.Errorf("Failed to sign challenge: %w", err)
 	}
 
-	return signed, nil
-}
-
-func (s *ChallengeSolver) signChallengeHandler(w http.ResponseWriter, r *http.Request) (error, int) {
-	if r.Method != http.MethodPost {
-		return errors.Errorf("only POST is allowed"), http.StatusMethodNotAllowed
-	}
-
-	challenge, err := io.ReadAll(r.Body)
+	compactSignedToken, err := signed.CompactSerialize()
 	if err != nil {
-		return errors.Errorf("failed to read challenge from request body: %w", err),
-			http.StatusInternalServerError
+		return nil, errors.Errorf("failed to compact serialize JWS: %w", err)
 	}
 
-	// Sign the token from the challenge and represent that as a compact JWS
-	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#name-openid-federation-challenge
-	signedToken, err := s.SignChallenge(string(challenge))
-	if err != nil {
-		return errors.Errorf("failed to sign challenge: %w", err), http.StatusInternalServerError
-	}
-
-	compactSignedToken, err := signedToken.CompactSerialize()
-	if err != nil {
-		return errors.Errorf("failed to compact serialize JWS: %w", err),
-			http.StatusInternalServerError
-	}
-
-	if _, err := w.Write([]byte(compactSignedToken)); err != nil {
-		return err, http.StatusInternalServerError
-	}
-
-	return nil, http.StatusOK
+	return &compactSignedToken, nil
 }
 
 // publicJWKS returns a JSONWebKeySet containing only the public portion of jwks.

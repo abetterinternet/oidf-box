@@ -12,7 +12,6 @@ import (
 	"github.com/zachmann/go-oidfed/pkg/jwk"
 
 	"github.com/tgeoghegan/oidf-box/errors"
-	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
 )
 
 const (
@@ -118,33 +117,10 @@ func (c *HTTPClient) NewFederationEndpoints(identifier string) (*FederationEndpo
 		}
 	}
 
-	// Non-standard endpoints
-	var signChallenge *url.URL
-	var acmeChallengeSolverMetadata oidf01.ACMEChallengeSolverEntityMetadata
-	if err := entityConfiguration.Metadata.FindEntityMetadata(
-		oidf01.ACMEChallengeSolverEntityType,
-		&acmeChallengeSolverMetadata,
-	); err == nil {
-		if acmeChallengeSolverMetadata.SignChallengeEndpoint == "" {
-			return nil, errors.Errorf(
-				"empty sign challenge endpoint in ACME challenge solver metadata for %s",
-				identifier,
-			)
-		}
-
-		signChallenge, err = url.Parse(acmeChallengeSolverMetadata.SignChallengeEndpoint)
-		if err != nil {
-			return nil, errors.Errorf(
-				"bad sign challenge endpoint '%s' in ACME challenge solver metadata: %w",
-				acmeChallengeSolverMetadata.SignChallengeEndpoint, err)
-		}
-	}
-
 	return &FederationEndpoints{
-		client:                *c,
-		Entity:                *entityConfiguration,
-		resolveEndpoint:       resolve,
-		signChallengeEndpoint: signChallenge,
+		client:          *c,
+		Entity:          *entityConfiguration,
+		resolveEndpoint: resolve,
 	}, nil
 }
 
@@ -193,9 +169,6 @@ type FederationEndpoints struct {
 	client          HTTPClient
 	Entity          oidf.EntityStatement
 	resolveEndpoint *url.URL
-	// Non-standard endpoints
-	signChallengeEndpoint *url.URL
-	// TODO(timg): other federation endpoints
 }
 
 // resolveHTTPResponse is the response to a federation resolve request, on the wire.
@@ -299,22 +272,4 @@ func (fe *FederationEndpoints) Resolve(
 		EntityConfiguration: *subjectEC,
 		TrustChain:          trustChainES,
 	}, nil
-}
-
-func (fe *FederationEndpoints) SignChallenge(token string) (string, error) {
-	if fe.signChallengeEndpoint == nil {
-		return "", errors.Errorf("no sign challenge endpoint in entity metadata")
-	}
-	resp, err := fe.client.client.Post(fe.signChallengeEndpoint.String(), "text", strings.NewReader(token))
-	if err != nil {
-		return "", errors.Errorf("failed to POST signature request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	signedToken, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", errors.Errorf("failed to read signed token from response: %w", err)
-	}
-
-	return string(signedToken), nil
 }
