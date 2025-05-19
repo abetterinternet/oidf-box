@@ -84,45 +84,52 @@ type TestEntity struct {
 	done chan struct{}
 }
 
+// EntityConfiguration configures an OIDF entity for use in the test harness.
+type EntityConfiguration struct {
+	// OIDFClient is the client used to make HTTP requests to OIDF entities.
+	OIDFClient *oidfclient.HTTPClient
+	// Label describes the entity but is not used as the identifier.
+	Label string
+	// ExtraMetadata contains extra entity metadata that will be advertised by the entity.
+	ExtraMetadata map[string]any
+	// ACMERequestor, if non-nil, causes the entity to be an ACME requestor configured accordingly.
+	ACMERequestor *ACMERequestorOptions
+	// Superiors contains the entity's federation superiors.
+	Superiors []*TestEntity
+	// DisabledEndpoints is a list of OIDF endpoints to disable on this entity.
+	DisabledEndpoints []string
+}
+
 func mustEntity(
 	t *testing.T,
-	oidfClient *oidfclient.HTTPClient,
-	label string,
-	extraMetadata map[string]any,
-	acmeRequestor bool,
-	superiors []*TestEntity,
+	config EntityConfiguration,
 ) *TestEntity {
 	authorityHints := []string{}
-	for _, superior := range superiors {
+	for _, superior := range config.Superiors {
 		authorityHints = append(authorityHints, superior.FedEntity.FederationEntity.EntityID)
 	}
 
-	// Bind any available port, and then construct an entity ID with that port
-	listener, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("failed to bind port: %s", err)
-	}
-	addr, err := net.ResolveTCPAddr(listener.Addr().Network(), listener.Addr().String())
-	if err != nil {
-		t.Fatalf("failed to resolve TCP address: %s", err)
-	}
-
+	// Bind any available port, and then construct an entity ID with that port.
+	listener, addr := mustListener(t)
 	entityID := fmt.Sprintf("http://localhost:%d", addr.Port)
 
-	subordinateStorage, trustMarkStorage := mustEntityStorage(t, label)
+	subordinateStorage, trustMarkStorage := mustEntityStorage(t, config.Label)
 
 	var challengeSolver *oidf01.ChallengeSolver
-	if acmeRequestor {
+	var err error
+	if config.ACMERequestor != nil {
 		challengeSolver, err = oidf01.NewSolver(entityID)
 		if err != nil {
 			t.Fatalf("failed to setup ACME challenge solver: %s", err)
 		}
 
-		if extraMetadata == nil {
-			extraMetadata = make(map[string]any)
+		challengeSolver.PresentTrustChain = config.ACMERequestor.PresentTrustChain
+
+		if config.ExtraMetadata == nil {
+			config.ExtraMetadata = make(map[string]any)
 		}
 
-		extraMetadata[oidf01.ACMERequestorEntityType] = oidf01.ACMERequestorMetadata{
+		config.ExtraMetadata[oidf01.ACMERequestorEntityType] = oidf01.ACMERequestorMetadata{
 			ChallengeSigningKeys: challengeSolver.ChallengeSigningPublicKeys(),
 		}
 	}
@@ -133,7 +140,7 @@ func mustEntity(
 		&oidf.Metadata{
 			// Provide no Federation entity metadata. We'll wire up federation endpoints and
 			// handlers later.
-			Extra: extraMetadata,
+			Extra: config.ExtraMetadata,
 		},
 		mustFederationEntitySigningKey(t),
 		jwa.ES256(),
@@ -143,12 +150,18 @@ func mustEntity(
 		},
 	)
 	if err != nil {
-		t.Fatalf("failed to instantiate %s: %s", label, err)
+		t.Fatalf("failed to instantiate %s: %s", config.Label, err)
 	}
-	entity.AddFetchEndpoint(fedentities.EndpointConf{Path: "/fetch"}, subordinateStorage)
-	entity.AddSubordinateListingEndpoint(
-		fedentities.EndpointConf{Path: "/list"}, subordinateStorage, trustMarkStorage)
-	entity.AddResolveEndpoint(fedentities.EndpointConf{Path: "/resolve"})
+	if !slices.Contains(config.DisabledEndpoints, "fetch") {
+		entity.AddFetchEndpoint(fedentities.EndpointConf{Path: "/fetch"}, subordinateStorage)
+	}
+	if !slices.Contains(config.DisabledEndpoints, "list") {
+		entity.AddSubordinateListingEndpoint(
+			fedentities.EndpointConf{Path: "/list"}, subordinateStorage, trustMarkStorage)
+	}
+	if !slices.Contains(config.DisabledEndpoints, "resolve") {
+		entity.AddResolveEndpoint(fedentities.EndpointConf{Path: "/resolve"})
+	}
 
 	testEntity := TestEntity{
 		FedEntity:          entity,
@@ -158,12 +171,12 @@ func mustEntity(
 		done:               make(chan struct{}),
 	}
 
-	for _, superior := range superiors {
+	for _, superior := range config.Superiors {
 		superior.AddSubordinate(&testEntity)
 	}
 
 	go func() {
-		t.Logf("serve entity '%s' at %s", entityID, listener.Addr().String())
+		t.Logf("serve entity %s '%s' at %s", config.Label, entityID, listener.Addr().String())
 		if err := http.Serve(testEntity.listener, entity.HttpHandlerFunc()); err != nil &&
 			!strings.Contains(err.Error(), "use of closed network connection") {
 			t.Log(err)
@@ -172,12 +185,15 @@ func mustEntity(
 		testEntity.done <- struct{}{}
 	}()
 
-	endpoints, err := oidfClient.NewFederationEndpoints(entityID)
+	endpoints, err := config.OIDFClient.NewFederationEndpoints(entityID)
 	if err != nil {
 		t.Fatalf("failed to create Federation endpoints client: %s", err)
 	}
 
 	testEntity.Endpoints = endpoints
+	if testEntity.ChallengeSolver != nil {
+		testEntity.ChallengeSolver.RequestorOIDFClient = endpoints
+	}
 
 	return &testEntity
 }
@@ -212,6 +228,8 @@ func mustEntityStorage(t *testing.T, entityLabel string) (
 	storage.SubordinateStorageBackend,
 	storage.TrustMarkedEntitiesStorageBackend,
 ) {
+	// Creating a temp dir with a random path component ensures that we can run however many
+	// entities we want, while running many tests in parallel, and they won't step on each other.
 	backendStoragePath, err := os.MkdirTemp("", fmt.Sprintf("subordinate-storage-%s-", entityLabel))
 	if err != nil {
 		t.Fatalf("failed to create temp storage: %s", err)
@@ -224,11 +242,17 @@ func mustEntityStorage(t *testing.T, entityLabel string) (
 func setupPebble(
 	t *testing.T,
 	listener net.Listener,
+	trustAnchors []*TestEntity,
 	issuer *oidfclient.FederationEndpoints,
 ) (func(), error) {
 	// Log to stdout
 	logger := log.New(TestLogWriter{t}, "Pebble ", log.LstdFlags)
 	logger.Printf("Starting Pebble ACME server")
+
+	var trustAnchorIdentifiers []string
+	for _, trustAnchor := range trustAnchors {
+		trustAnchorIdentifiers = append(trustAnchorIdentifiers, trustAnchor.FedEntity.FederationEntity.EntityID)
+	}
 
 	db := db.NewMemoryStore()
 	ca := ca.New(
@@ -251,6 +275,7 @@ func setupPebble(
 		false, //strictMode
 		"",    // resolverAddress
 		issuer,
+		trustAnchorIdentifiers,
 		db,
 	)
 	wfeImpl := wfe.New(
@@ -263,6 +288,7 @@ func setupPebble(
 		3,     // authz retry after
 		5,     // order retry after
 	)
+	wfeImpl.SetOIDFTrustAnchors(trustAnchorIdentifiers)
 	muxHandler := wfeImpl.Handler()
 
 	return func() {
@@ -385,4 +411,21 @@ func validateIdentifiers(t *testing.T, pemCertChain []byte, expectedIdentifiers 
 	if !slices.Equal(oidfIdentifiers, expectedIdentifiers) {
 		t.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
 	}
+}
+
+// mustListener binds some available TCP port and resolves the bound address, returning the
+// listener and the address. The listener can then be used in `http.Serve` or `http.ServeTLS`.
+// Dynamically binding ports means we can run as many OIDF entities or ACME servers as we want, in
+// parallel, without them colliding, up to the system's available TCP ports.
+func mustListener(t *testing.T) (net.Listener, *net.TCPAddr) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("failed to bind port: %s", err)
+	}
+	addr, err := net.ResolveTCPAddr(listener.Addr().Network(), listener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to resolve TCP address: %s", err)
+	}
+
+	return listener, addr
 }

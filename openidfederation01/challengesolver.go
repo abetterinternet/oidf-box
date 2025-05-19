@@ -13,6 +13,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"github.com/tgeoghegan/oidf-box/errors"
+	"github.com/tgeoghegan/oidf-box/oidfclient"
 )
 
 const (
@@ -22,8 +23,18 @@ const (
 // ChallengeSolver solves ACME OpenIDFederation challenges over HTTP
 type ChallengeSolver struct {
 	EntityIdentifier string
+
 	// challengeSigningKeys is a set of keys that may be used to solve ACME challenges.
 	challengeSigningKeys jose.JSONWebKeySet
+
+	// PresentTrustChain governs whether this solver will include a trust chain in its challenge
+	// responses.
+	// https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html#section-6.7
+	PresentTrustChain bool
+
+	// RequestorOIDFClient is used by the challenge solver to construct trust chains when satisfying
+	// challenges.
+	RequestorOIDFClient *oidfclient.FederationEndpoints
 
 	// listener may be a bound port on which requests for OpenID Federation API (i.e. entity
 	// configurations or other federation endpoints) are listened to
@@ -54,7 +65,10 @@ func (s *ChallengeSolver) ChallengeSigningPublicKeys() *jose.JSONWebKeySet {
 
 // Solve constructs a JWS containing a signature over token using one of the entity's acme_requestor
 // keys.
-func (s *ChallengeSolver) Solve(token string) (*ChallengeResponse, error) {
+func (s *ChallengeSolver) Solve(
+	token string,
+	issuerTrustAnchors []string,
+) (*ChallengeResponse, error) {
 	challengeSigner, err := jose.NewSigner(
 		jose.SigningKey{
 			// TODO: probably should validate that the Algorithm field is valid somehow
@@ -85,7 +99,36 @@ func (s *ChallengeSolver) Solve(token string) (*ChallengeResponse, error) {
 		return nil, errors.Errorf("failed to compact serialize JWS: %w", err)
 	}
 
-	return &ChallengeResponse{Sig: compactSignedToken}, nil
+	challengeResponse := ChallengeResponse{Sig: compactSignedToken}
+
+	if s.PresentTrustChain && len(issuerTrustAnchors) > 0 {
+		// Try to construct a trust chain attesting to acme_requestor metadata from ourself to any
+		// of the issuer's TAs. If we can find one, give it to the issuer to save it the trouble of
+		// resolving.
+		resolveResponse, err := s.RequestorOIDFClient.Resolve(
+			s.EntityIdentifier,
+			issuerTrustAnchors,
+			[]string{ACMERequestorEntityType},
+		)
+		// It's not crystal clear what the right thing to do here is. We could either fail to solve
+		// the challenge, on the assumption that no trust path whatsoever exists from us to the
+		// issuer's TAs, or we could provide the token signature without a trust chain, hoping that
+		// perhaps the issuer can find a trust path we can't. For now I am failing noisily because
+		// it's easier to implement and debug.
+		// https://github.com/peppelinux/draft-demarco-acme-openid-federation/issues/79
+		if err != nil {
+			return nil, errors.Errorf("failed to construct trust chain to issuer TAs: %w", err)
+		}
+
+		trustChain := []string{}
+		for _, entityStatement := range resolveResponse.ResolveResponse.TrustChain {
+			trustChain = append(trustChain, string(entityStatement.RawJWT))
+		}
+
+		challengeResponse.TrustChain = trustChain
+	}
+
+	return &challengeResponse, nil
 }
 
 // publicJWKS returns a JSONWebKeySet containing only the public portion of jwks.

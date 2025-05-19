@@ -180,8 +180,8 @@ type resolveHTTPResponse struct {
 // ResolveResponse is the response to a federation resolve request.
 type ResolveResponse struct {
 	oidf.ResolveResponse
-	EntityConfiguration oidf.EntityStatement
-	TrustChain          []oidf.EntityStatement
+	EntityConfiguration *oidf.EntityStatement
+	TrustChain          []*oidf.EntityStatement
 }
 
 func (fe *FederationEndpoints) Resolve(
@@ -211,9 +211,27 @@ func (fe *FederationEndpoints) Resolve(
 		return nil, errors.Errorf("failed to parse resolve response")
 	}
 
+	rawJWTs := []string{}
+	for _, message := range resolveResponse.TrustChain {
+		rawJWTs = append(rawJWTs, string(message.RawJWT))
+	}
+
+	trustChain, err := ValidateTrustChain(subject, trustAnchors, rawJWTs)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ResolveResponse{
+		ResolveResponse:     *resolveResponse,
+		EntityConfiguration: trustChain[0],  // First element of OIDF trust chain is the EC
+		TrustChain:          trustChain[1:], // Remainder of OIDF trust chain is chain of ESes
+	}, nil
+}
+
+func ValidateTrustChain(subject string, trustAnchors []string, trustChain []string) ([]*oidf.EntityStatement, error) {
 	// Validate the trust chain in the response. The 0th element is an entity configuration for the
 	// subject.
-	subjectEC, err := ValidateEntityStatement(resolveResponse.TrustChain[0].RawJWT, nil)
+	subjectEC, err := ValidateEntityStatement([]byte(trustChain[0]), nil)
 	if err != nil {
 		return nil, errors.Errorf("entity configuration in resolved trust chain not trustworthy: %w", err)
 	}
@@ -227,13 +245,13 @@ func (fe *FederationEndpoints) Resolve(
 	// The remaining elements are a chain of subordinate statements, ending in an EC for the trust
 	// anchor. Walk the trust chain backward (starting at the trust anchor), until we hit the end,
 	// validating signatures along the way.
-	trustChain := resolveResponse.TrustChain[1:]
+	trustChain = trustChain[1:]
 	slices.Reverse(trustChain)
 	var lastKeys *jwk.JWKS
 	// Gather validated entity statements in trustChainES
-	trustChainES := []oidf.EntityStatement{}
+	trustChainES := []*oidf.EntityStatement{}
 	for i, jws := range trustChain {
-		entityStatement, err := ValidateEntityStatement(jws.RawJWT, lastKeys)
+		entityStatement, err := ValidateEntityStatement([]byte(jws), lastKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -260,16 +278,13 @@ func (fe *FederationEndpoints) Resolve(
 			}
 		}
 
-		trustChainES = append(trustChainES, *entityStatement)
+		trustChainES = append(trustChainES, entityStatement)
 	}
-	// Reverse the slice of validated entity statements so we can given the caller a trust chain
-	// where the 0th element is the end entity, which is what they'd expect given OIDF's
+	trustChainES = append(trustChainES, subjectEC)
+	// Reverse the slice of validated entity statements so we can give the caller a trust chain
+	// where the 0th element is the entity configuration, which is what they'd expect given OIDF's
 	// specification of a trust chain.
 	slices.Reverse(trustChainES)
 
-	return &ResolveResponse{
-		ResolveResponse:     *resolveResponse,
-		EntityConfiguration: *subjectEC,
-		TrustChain:          trustChainES,
-	}, nil
+	return trustChainES, nil
 }
