@@ -1,10 +1,8 @@
 package test
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"slices"
+	"net"
 	"testing"
 
 	"github.com/go-acme/lego/v4/acme"
@@ -34,6 +32,16 @@ func TestIssuance(t *testing.T) {
 		[]*TestEntity{trustAnchor},
 	)
 	defer intermediate.CleanUp()
+
+	// Bind any available port for Pebble
+	pebbleListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("failed to bind port: %s", err)
+	}
+	pebbleAddr, err := net.ResolveTCPAddr(pebbleListener.Addr().Network(), pebbleListener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to resolve TCP address: %s", err)
+	}
 	issuer := mustEntity(
 		t,
 		&oidfClient,
@@ -41,9 +49,7 @@ func TestIssuance(t *testing.T) {
 		// extraMetadata
 		map[string]any{
 			oidf01.ACMEIssuerEntityType: oidf01.ACMEIssuerMetadata{
-				// Corresponds to pebble/test/config/pebble-config.json
-				// TODO(timg) this should be configurable
-				Directory: "https://0.0.0.0:14000/dir",
+				Directory: fmt.Sprintf("https://0.0.0.0:%d/dir", pebbleAddr.Port),
 			},
 		},
 		false, // acmeRequestor
@@ -70,7 +76,7 @@ func TestIssuance(t *testing.T) {
 	defer otherLeaf.CleanUp()
 
 	// Setup Pebble and spawn a goroutine to run it
-	pebbleFunc, err := setupPebble(t, issuer.Endpoints)
+	pebbleFunc, err := setupPebble(t, pebbleListener, issuer.Endpoints)
 	if err != nil {
 		t.Fatalf("failed to setup Pebble: %s", err)
 	}
@@ -102,28 +108,8 @@ func TestIssuance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fmt.Printf("PEM certificate:\n%s\n", string(certificates.Certificate))
-
-	block, _ := pem.Decode(certificates.Certificate)
-	if block == nil || block.Type != "CERTIFICATE" {
-		t.Fatal("failed to parse PEM certificate")
-	}
-
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		t.Fatalf("failed to parse X.509 certificate: %s", err)
-	}
-
-	oidfIdentifiers, err := oidf01.EntityIdentifiersFromCertificate(cert)
-	if err != nil {
-		t.Fatalf("failed to extract OpenID Federation identifiers from certificate: %s", err)
-	}
-
-	if !slices.Contains(oidfIdentifiers, requestor.FedEntity.FederationEntity.EntityID) ||
-		!slices.Contains(oidfIdentifiers, otherLeaf.FedEntity.FederationEntity.EntityID) ||
-		len(oidfIdentifiers) != 2 {
-		t.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
-	}
-
-	t.Logf("Identifiers in end entity cert: %s, %s\n", oidfIdentifiers[0], oidfIdentifiers[1])
+	validateIdentifiers(t, certificates.Certificate, []string{
+		requestor.FedEntity.FederationEntity.EntityID,
+		otherLeaf.FedEntity.FederationEntity.EntityID,
+	})
 }

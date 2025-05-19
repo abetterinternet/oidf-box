@@ -52,9 +52,9 @@ func (s *ChallengeSolver) ChallengeSigningPublicKeys() *jose.JSONWebKeySet {
 	return &publicKeys
 }
 
-// SignChallenge constructs a JWS containing a signature over token using one of the entity's
-// acme_requestor keys.
-func (s *ChallengeSolver) SignChallenge(token string) (*string, error) {
+// Solve constructs a JWS containing a signature over token using one of the entity's acme_requestor
+// keys.
+func (s *ChallengeSolver) Solve(token string) (*ChallengeResponse, error) {
 	challengeSigner, err := jose.NewSigner(
 		jose.SigningKey{
 			// TODO: probably should validate that the Algorithm field is valid somehow
@@ -85,7 +85,7 @@ func (s *ChallengeSolver) SignChallenge(token string) (*string, error) {
 		return nil, errors.Errorf("failed to compact serialize JWS: %w", err)
 	}
 
-	return &compactSignedToken, nil
+	return &ChallengeResponse{Sig: compactSignedToken}, nil
 }
 
 // publicJWKS returns a JSONWebKeySet containing only the public portion of jwks.

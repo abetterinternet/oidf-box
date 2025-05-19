@@ -5,11 +5,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,6 +61,13 @@ func (u DemoUser) GetRegistration() *registration.Resource {
 }
 func (u *DemoUser) GetPrivateKey() crypto.PrivateKey {
 	return u.key
+}
+
+// ACMERequestorOptions configures an entity to be an ACME requestor.
+type ACMERequestorOptions struct {
+	// PresentTrustChain controls whether challenge responses constructed by this entity will
+	// include the trust chain from the entity
+	PresentTrustChain bool
 }
 
 type TestEntity struct {
@@ -198,7 +208,10 @@ func mustFederationEntitySigningKey(t *testing.T) *ecdsa.PrivateKey {
 	return sk
 }
 
-func mustEntityStorage(t *testing.T, entityLabel string) (storage.SubordinateStorageBackend, storage.TrustMarkedEntitiesStorageBackend) {
+func mustEntityStorage(t *testing.T, entityLabel string) (
+	storage.SubordinateStorageBackend,
+	storage.TrustMarkedEntitiesStorageBackend,
+) {
 	backendStoragePath, err := os.MkdirTemp("", fmt.Sprintf("subordinate-storage-%s-", entityLabel))
 	if err != nil {
 		t.Fatalf("failed to create temp storage: %s", err)
@@ -208,7 +221,11 @@ func mustEntityStorage(t *testing.T, entityLabel string) (storage.SubordinateSto
 	return storageBackend.SubordinateStorage(), storageBackend.TrustMarkedEntitiesStorage()
 }
 
-func setupPebble(t *testing.T, issuer *oidfclient.FederationEndpoints) (func(), error) {
+func setupPebble(
+	t *testing.T,
+	listener net.Listener,
+	issuer *oidfclient.FederationEndpoints,
+) (func(), error) {
 	// Log to stdout
 	logger := log.New(TestLogWriter{t}, "Pebble ", log.LstdFlags)
 	logger.Printf("Starting Pebble ACME server")
@@ -249,15 +266,13 @@ func setupPebble(t *testing.T, issuer *oidfclient.FederationEndpoints) (func(), 
 	muxHandler := wfeImpl.Handler()
 
 	return func() {
-		listenAddress := "0.0.0.0:14000"
-		logger.Printf("Listening on: %s\n", listenAddress)
 		logger.Printf("ACME directory available at https://%s%s",
-			listenAddress, wfe.DirectoryPath)
-		err := http.ListenAndServeTLS(
-			listenAddress,
+			listener.Addr().String(), wfe.DirectoryPath)
+		err := http.ServeTLS(
+			listener,
+			muxHandler,
 			"certs/localhost/cert.pem",
 			"certs/localhost/key.pem",
-			muxHandler,
 		)
 		if err != nil {
 			t.Fatalf("calling ListenAndServeTLS(): %s", err)
@@ -291,7 +306,8 @@ func setupLego(t *testing.T, config LegoConfig) *lego.Client {
 		oidf01.ACMEIssuerEntityType,
 		&acmeIssuerMetadata,
 	); err != nil {
-		t.Fatalf("no metadata for entity type '%s' in resolve response: %s", oidf01.ACMEIssuerEntityType, err)
+		t.Fatalf("no metadata for entity type '%s' in resolve response: %s",
+			oidf01.ACMEIssuerEntityType, err)
 	}
 
 	demoUser := newDemoUser(t)
@@ -323,7 +339,9 @@ func setupLego(t *testing.T, config LegoConfig) *lego.Client {
 		t.Fatal(err)
 	}
 
-	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	reg, err := client.Registration.Register(registration.RegisterOptions{
+		TermsOfServiceAgreed: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,4 +360,29 @@ func (w TestLogWriter) Write(p []byte) (int, error) {
 	w.t.Log(string(p))
 
 	return 0, nil
+}
+
+func validateIdentifiers(t *testing.T, pemCertChain []byte, expectedIdentifiers []string) {
+	t.Logf("PEM certificate:\n%s\n", string(pemCertChain))
+
+	block, _ := pem.Decode(pemCertChain)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatal("failed to parse PEM certificate")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse X.509 certificate: %s", err)
+	}
+
+	oidfIdentifiers, err := oidf01.EntityIdentifiersFromCertificate(cert)
+	if err != nil {
+		t.Fatalf("failed to extract OpenID Federation identifiers from certificate: %s", err)
+	}
+
+	slices.Sort(oidfIdentifiers)
+	slices.Sort(expectedIdentifiers)
+	if !slices.Equal(oidfIdentifiers, expectedIdentifiers) {
+		t.Fatalf("unexpected identifiers in issued cert: %v", oidfIdentifiers)
+	}
 }
