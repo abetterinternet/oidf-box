@@ -1,89 +1,40 @@
 package test
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/go-acme/lego/v4/acme"
 	"github.com/go-acme/lego/v4/certificate"
 
-	"github.com/tgeoghegan/oidf-box/oidfclient"
 	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
 )
 
+// TestIssuanceMultipleNames tests issuance where:
+//
+// - two identifiers are in the cert
+// - the challenge solver does not include a trust chain in its challenge response
 func TestIssuanceMultipleNames(t *testing.T) {
-	oidfClient := oidfclient.NewOIDFClient()
-	trustAnchor := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "trust-anchor",
-			// trust anchor has no authority hints
-			Superiors: nil,
-		},
-	)
-	defer trustAnchor.CleanUp()
-	intermediate := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "intermediate",
-			Superiors:  []*TestEntity{trustAnchor},
-		},
-	)
-	defer intermediate.CleanUp()
+	federation := mustSimpleFederation(t, ACMERequestorOptions{}, nil)
+	defer federation.CleanUp()
 
-	// Bind any available port for Pebble
-	pebbleListener, pebbleAddr := mustListener(t)
-	issuer := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "issuer",
-			ExtraMetadata: map[string]any{
-				oidf01.ACMEIssuerEntityType: oidf01.ACMEIssuerMetadata{
-					Directory: fmt.Sprintf("https://0.0.0.0:%d/dir", pebbleAddr.Port),
-				},
-			},
-			Superiors: []*TestEntity{intermediate},
-		},
-	)
-	defer issuer.CleanUp()
-	requestor := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient:    &oidfClient,
-			Label:         "requestor",
-			ExtraMetadata: map[string]any{},
-			ACMERequestor: &ACMERequestorOptions{},
-			Superiors:     []*TestEntity{intermediate},
-		},
-	)
-	defer requestor.CleanUp()
 	otherLeaf := mustEntity(
 		t,
 		EntityConfiguration{
-			OIDFClient:    &oidfClient,
+			OIDFClient:    federation.OIDFClient,
 			Label:         "other-leaf",
 			ACMERequestor: &ACMERequestorOptions{},
-			Superiors:     []*TestEntity{intermediate},
+			Superiors:     []*TestEntity{federation.Intermediate},
 		},
 	)
 	defer otherLeaf.CleanUp()
 
-	// Setup Pebble and spawn a goroutine to run it
-	pebbleFunc, err := setupPebble(t, pebbleListener, []*TestEntity{trustAnchor}, issuer.Endpoints)
-	if err != nil {
-		t.Fatalf("failed to setup Pebble: %s", err)
-	}
-
-	go pebbleFunc()
+	go federation.PebbleFunc()
 
 	legoClient := setupLego(t, LegoConfig{
-		RequestorClient:  requestor.Endpoints,
-		IssuerIdentifier: issuer.FedEntity.FederationEntity.EntityID,
+		RequestorClient:  federation.Requestor.Endpoints,
+		IssuerIdentifier: federation.Issuer.FedEntity.FederationEntity.EntityID,
 		ChallengeSolvers: []*oidf01.ChallengeSolver{
-			requestor.ChallengeSolver,
+			federation.Requestor.ChallengeSolver,
 			otherLeaf.ChallengeSolver,
 		},
 	})
@@ -93,107 +44,118 @@ func TestIssuanceMultipleNames(t *testing.T) {
 	// entities? But we want to ensure this is possible in the ACME extension.
 	request := certificate.ObtainRequest{
 		Identifiers: []acme.Identifier{
-			{Type: "openid-federation", Value: requestor.FedEntity.FederationEntity.EntityID},
+			{
+				Type:  "openid-federation",
+				Value: federation.Requestor.FedEntity.FederationEntity.EntityID,
+			},
 			{Type: "openid-federation", Value: otherLeaf.FedEntity.FederationEntity.EntityID},
 		},
 		Bundle: true,
 	}
-	t.Logf("obtaining cert for 'domains' %+v", request.Identifiers)
+
 	certificates, err := legoClient.Certificate.Obtain(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	validateIdentifiers(t, certificates.Certificate, []string{
-		requestor.FedEntity.FederationEntity.EntityID,
+		federation.Requestor.FedEntity.FederationEntity.EntityID,
 		otherLeaf.FedEntity.FederationEntity.EntityID,
 	})
 }
 
+// TestIssuancePresentingTrustChain tests issuance where:
+//
+// - A single identifier is in the cert
+// - The solver does provide a trust chain in its response
 func TestIssuancePresentingTrustChain(t *testing.T) {
-	oidfClient := oidfclient.NewOIDFClient()
-	trustAnchor := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "trust-anchor",
-			// trust anchor has no authority hints
-			Superiors: nil,
+	federation := mustSimpleFederation(t,
+		ACMERequestorOptions{
+			PresentTrustChain: true,
 		},
+		// Disable the issuer's resolve endpoint so that trust can only be established by verifying
+		// the trust chain in the ACME challenge response from the requestor.
+		[]string{"resolve"},
 	)
-	defer trustAnchor.CleanUp()
-	intermediate := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "intermediate",
-			Superiors:  []*TestEntity{trustAnchor},
-		},
-	)
-	defer intermediate.CleanUp()
+	defer federation.CleanUp()
 
-	// Bind any available port for Pebble
-	pebbleListener, pebbleAddr := mustListener(t)
-	issuer := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient: &oidfClient,
-			Label:      "issuer",
-			ExtraMetadata: map[string]any{
-				oidf01.ACMEIssuerEntityType: oidf01.ACMEIssuerMetadata{
-					Directory: fmt.Sprintf("https://0.0.0.0:%d/dir", pebbleAddr.Port),
-				},
-			},
-			Superiors: []*TestEntity{intermediate},
-			// Disable the resolve endpoint so that trust can only be established by verifying the
-			// trust chain in the ACME challenge response from the requestor.
-			DisabledEndpoints: []string{"resolve"},
-		},
-	)
-	defer issuer.CleanUp()
-	requestor := mustEntity(
-		t,
-		EntityConfiguration{
-			OIDFClient:    &oidfClient,
-			Label:         "requestor",
-			ExtraMetadata: map[string]any{},
-			ACMERequestor: &ACMERequestorOptions{
-				PresentTrustChain: true,
-			},
-			Superiors: []*TestEntity{intermediate},
-		},
-	)
-	defer requestor.CleanUp()
-
-	// Setup Pebble and spawn a goroutine to run it
-	pebbleFunc, err := setupPebble(t, pebbleListener, []*TestEntity{trustAnchor}, issuer.Endpoints)
-	if err != nil {
-		t.Fatalf("failed to setup Pebble: %s", err)
-	}
-
-	go pebbleFunc()
+	go federation.PebbleFunc()
 
 	legoClient := setupLego(t, LegoConfig{
-		RequestorClient:  requestor.Endpoints,
-		IssuerIdentifier: issuer.FedEntity.FederationEntity.EntityID,
+		RequestorClient:  federation.Requestor.Endpoints,
+		IssuerIdentifier: federation.Issuer.FedEntity.FederationEntity.EntityID,
 		ChallengeSolvers: []*oidf01.ChallengeSolver{
-			requestor.ChallengeSolver,
+			federation.Requestor.ChallengeSolver,
 		},
 	})
 
 	request := certificate.ObtainRequest{
 		Identifiers: []acme.Identifier{
-			{Type: "openid-federation", Value: requestor.FedEntity.FederationEntity.EntityID},
+			{
+				Type:  "openid-federation",
+				Value: federation.Requestor.FedEntity.FederationEntity.EntityID,
+			},
 		},
 		Bundle: true,
 	}
-	t.Logf("obtaining cert for 'domains' %+v", request.Identifiers)
+
 	certificates, err := legoClient.Certificate.Obtain(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	validateIdentifiers(t, certificates.Certificate, []string{
-		requestor.FedEntity.FederationEntity.EntityID,
+		federation.Requestor.FedEntity.FederationEntity.EntityID,
+	})
+}
+
+// TestRenew tests renewing an issued certificate
+func TestRewew(t *testing.T) {
+	// Obtain a new certificate
+	federation := mustSimpleFederation(t,
+		ACMERequestorOptions{
+			PresentTrustChain: true,
+		},
+		// Disable the issuer's resolve endpoint so that trust can only be established by verifying
+		// the trust chain in the ACME challenge response from the requestor.
+		[]string{"resolve"},
+	)
+	defer federation.CleanUp()
+
+	go federation.PebbleFunc()
+
+	legoClient := setupLego(t, LegoConfig{
+		RequestorClient:  federation.Requestor.Endpoints,
+		IssuerIdentifier: federation.Issuer.FedEntity.FederationEntity.EntityID,
+		ChallengeSolvers: []*oidf01.ChallengeSolver{
+			federation.Requestor.ChallengeSolver,
+		},
+	})
+
+	request := certificate.ObtainRequest{
+		Identifiers: []acme.Identifier{
+			{
+				Type:  "openid-federation",
+				Value: federation.Requestor.FedEntity.FederationEntity.EntityID,
+			},
+		},
+		Bundle: true,
+	}
+
+	certificateResource, err := legoClient.Certificate.Obtain(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	renewedCertificate, err := legoClient.Certificate.RenewWithOptions(
+		*certificateResource,
+		&certificate.RenewOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validateIdentifiers(t, renewedCertificate.Certificate, []string{
+		federation.Requestor.FedEntity.FederationEntity.EntityID,
 	})
 }

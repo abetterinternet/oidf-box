@@ -429,3 +429,87 @@ func mustListener(t *testing.T) (net.Listener, *net.TCPAddr) {
 
 	return listener, addr
 }
+
+// SimpleFederation represents a simple federation containing entities common to most tests. The
+// owner of this object is responsible for calling CleanUp.
+type SimpleFederation struct {
+	OIDFClient   *oidfclient.HTTPClient
+	TrustAnchor  *TestEntity
+	Intermediate *TestEntity
+	Issuer       *TestEntity
+	Requestor    *TestEntity
+	// PebbleFunc should be called to run Pebble.
+	PebbleFunc func()
+}
+
+func (f *SimpleFederation) CleanUp() {
+	f.TrustAnchor.CleanUp()
+	f.Intermediate.CleanUp()
+	f.Issuer.CleanUp()
+	f.Requestor.CleanUp()
+}
+
+// mustSimpleFederation instantiates a simple federation consisting of a trust anchor, an
+// intermediate, an issuer and a requestor.
+func mustSimpleFederation(t *testing.T, acmeRequestorOptions ACMERequestorOptions, issuerDisabledEndpoints []string) SimpleFederation {
+	oidfClient := oidfclient.NewOIDFClient()
+	trustAnchor := mustEntity(
+		t,
+		EntityConfiguration{
+			OIDFClient: &oidfClient,
+			Label:      "trust-anchor",
+			// trust anchor has no authority hints
+			Superiors: nil,
+		},
+	)
+	intermediate := mustEntity(
+		t,
+		EntityConfiguration{
+			OIDFClient: &oidfClient,
+			Label:      "intermediate",
+			Superiors:  []*TestEntity{trustAnchor},
+		},
+	)
+
+	// Bind any available port for Pebble
+	pebbleListener, pebbleAddr := mustListener(t)
+	issuer := mustEntity(
+		t,
+		EntityConfiguration{
+			OIDFClient: &oidfClient,
+			Label:      "issuer",
+			ExtraMetadata: map[string]any{
+				oidf01.ACMEIssuerEntityType: oidf01.ACMEIssuerMetadata{
+					Directory: fmt.Sprintf("https://0.0.0.0:%d/dir", pebbleAddr.Port),
+				},
+			},
+			Superiors:         []*TestEntity{intermediate},
+			DisabledEndpoints: issuerDisabledEndpoints,
+		},
+	)
+	requestor := mustEntity(
+		t,
+		EntityConfiguration{
+			OIDFClient:    &oidfClient,
+			Label:         "requestor",
+			ExtraMetadata: map[string]any{},
+			ACMERequestor: &acmeRequestorOptions,
+			Superiors:     []*TestEntity{intermediate},
+		},
+	)
+
+	// Setup Pebble and return a closure to run it
+	pebbleFunc, err := setupPebble(t, pebbleListener, []*TestEntity{trustAnchor}, issuer.Endpoints)
+	if err != nil {
+		t.Fatalf("failed to setup Pebble: %s", err)
+	}
+
+	return SimpleFederation{
+		OIDFClient:   &oidfClient,
+		TrustAnchor:  trustAnchor,
+		Intermediate: intermediate,
+		Issuer:       issuer,
+		Requestor:    requestor,
+		PebbleFunc:   pebbleFunc,
+	}
+}
