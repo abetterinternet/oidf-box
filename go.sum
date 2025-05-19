@@ -111,6 +111,12 @@ github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/
 github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+github.com/tgeoghegan/go-oidfed v0.0.0-20250507182343-dc509506516f h1:Z/RQN8eMnXM07l+V7rJLpbp7QtVOuGs3raPSJIYu3ZQ=
+github.com/tgeoghegan/go-oidfed v0.0.0-20250507182343-dc509506516f/go.mod h1:gowUsXSDN46rkrZVwR9K6d74oG8/Eh1tJxPfEGm1wGs=
+github.com/tgeoghegan/lego/v4 v4.0.0-20250519232249-7e09e451b3c5 h1:jFsv/gZTyk6+FCXCYfj70jfmvRG4ny1SQOnkuuw2VT0=
+github.com/tgeoghegan/lego/v4 v4.0.0-20250519232249-7e09e451b3c5/go.mod h1:hRadslXSb190Aupm6voeiNGLXeFCARIJApeRbugpoiM=
+github.com/tgeoghegan/pebble/v2 v2.0.0-20250519232009-3daa64fe991d h1:h19OgR1qn7dE+ZEJjKD7xDGXhcqDseEQrMygvmLQpWo=
+github.com/tgeoghegan/pebble/v2 v2.0.0-20250519232009-3daa64fe991d/go.mod h1:pC93dVnT1fnNy42Sw5RX8xVvyby6th/0t7Pc1JNeBwU=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasthttp v1.51.0 h1:8b30A5JlZ6C7AS81RsWjYMQmrZG6feChmgAolCl1SqA=

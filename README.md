@@ -3,58 +3,31 @@
 Common pieces to implement [acme-openid-federation][acmeopenid] in Pebble (issuer/server) and Lego
 (requestor/client). Also implements necessary bits and pieces of [OpenID Federation][oidf].
 
-## Workspace preparation
+## Demo issuances
 
-You will need:
+This project contains a few issuance demos represented as integration tests, defined in
+`test/integration_test.go`. These tests create small OpenID Federation federations which include an
+ACME CA and one or more ACME clients. All of these run in-process, but listen for HTTP messages on
+different TCP ports.
 
-- Recent Go
-- Choose a directory as workspace
-- Clone this repository to `$WORKSPACE/oidf-box`
-- Clone [my fork of go-oidfed][timg-go-oidfed] to `$WORKSPACE/go-oidfed` and check out branch
-  `extra-entities`
-- Clone [my fork of Pebble][timg-pebble] to `$WORKSPACE/pebble` and check out branch `openidfed`
-- Clone [my fork of Lego][timg-lego] to `$WORKSPACE/lego` and check out branch `openidfed-client`
+To run issuances, simply do `go test ./...` from the root of the project. Add `-v` if you want to
+see what's going on. To exercise new issuance scenarios, add new tests to
+`test/integration_test.go`.
 
-The repositories MUST be laid out relative to each other as spelled out above because the various
-`go.mod`s have been modified to look for each other at relative paths.
+## Forked dependencies
 
-## Do an issuance with `federation` demo
+To make all this work, I had to teach various open source components about the new OpenID Federation
+entity types and/or the new ACME challenge type.
 
-If you check out tags `checkpoint-2` of each of `oidf-box`, `tgeoghegan/pebble` and
-`tgeoghegan/lego`, the demo will work in a manner conforming to draft-demarco-acme-openid-federation
-commit [`0573f04`][acme-oidf] and [openid-federation-1_0-41][oidf-41]. This demo uses a homegrown
-implementation of just enough of OpenID Federation to support issuance.
+The OIDF entities are implemented by [my fork of go-oidfed][timg-go-oidfed] ([upstream][go-oidfed]).
 
-To run the demo and do issuance, run `federation`:
+The ACME CA is implemented by [my fork of Pebble][timg-pebble] ([upstream][pebble]).
 
-```sh
-cd $WORKSPACE/oidf-box && go run ./cmd/
-```
+The ACME clients are implemented by [my fork of Lego][timg-lego] ([upstream][lego]).
 
-This demo and the modules in `oidf-box` that support it are likely to be deleted in the near future.
-
-The `federation` binary will:
-
-- create an OpenID federation consisting of a trust anchor, an intermediate, an ACME issuer and two
-  ACME requestors
-- serve Federation endpoints for each entity on different ports on `localhost`
-- Run Pebble, configured to service OpenID Federation ACME challenges
-- Run Lego to obtain a certificate for the two ACME requestor entities
-
-The entity identifiers are hard coded to things like `http://localhost:8001`, and so this setup will
-break if those ports are already bound by something else.
-
-## `go-oidfed` demo
-
-`cmd/go-oidfed` contains an alternate demo setup that uses `go-oidfed` to implement OpenID
-Federation. `go-oidfed` is far more robust than `oidf-box`, implementing all of the standard
-federation endpoints as well as advanced features like metadata policy and trust marks.
-
-To run the demo and do issuance, run `go-oidfed`:
-
-```sh
-cd $WORKSPACE/oidf-box && go run ./cmd/go-oidfed/
-```
+Besides implementing the extra features needed for the new challenge type, the forks' `go.mod` and
+`go.sum` files are modified to point to each other. If you want to hack on this, you'll likely want
+to edit the `replace` directives in each `go.mod` to point to your working copies.
 
 This is tested on Linux and will probably work all right on anything Unix-y enough, or even Windows.
 
@@ -62,6 +35,9 @@ This is tested on Linux and will probably work all right on anything Unix-y enou
 [oidf-41]: https://openid.net/specs/openid-federation-1_0-41.html
 [acmeopenid]: https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html
 [timg-go-oidfed]: https://github.com/tgeoghegan/go-oidfed
+[go-oidfed]: https://github.com/zachmann/go-oidfed
 [timg-pebble]: https://github.com/tgeoghegan/pebble
+[pebble]: https://github.com/letsencrypt/pebble
 [timg-lego]: https://github.com/tgeoghegan/lego
+[lego]: https://github.com/go-acme/lego
 [acmeopenid-0573f04]: https://github.com/peppelinux/draft-demarco-acme-openid-federation/commit/0573f04f6a1fe50b01358abc3288dfff32a33c6c
