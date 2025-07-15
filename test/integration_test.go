@@ -6,7 +6,7 @@ import (
 	"github.com/go-acme/lego/v4/acme"
 	"github.com/go-acme/lego/v4/certificate"
 
-	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
+	oidf01 "github.com/abetterinternet/oidf-box/openidfederation01"
 )
 
 // TestIssuanceMultipleNames tests issuance where:

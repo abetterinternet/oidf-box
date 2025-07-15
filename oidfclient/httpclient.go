@@ -11,7 +11,7 @@ import (
 	oidf "github.com/zachmann/go-oidfed/pkg"
 	"github.com/zachmann/go-oidfed/pkg/jwk"
 
-	"github.com/tgeoghegan/oidf-box/errors"
+	"github.com/abetterinternet/oidf-box/errors"
 )
 
 const (

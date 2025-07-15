@@ -1,4 +1,4 @@
-module github.com/tgeoghegan/oidf-box
+module github.com/abetterinternet/oidf-box
 
 go 1.24
 
@@ -50,6 +50,7 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/scylladb/go-set v1.0.3-0.20200225121959-cc7b2070d91e // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
+	github.com/tgeoghegan/oidf-box v0.0.0-20250519230951-6b44a9142bd2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.51.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
@@ -72,6 +73,6 @@ require (
 	tideland.dev/go/slices v0.2.0 // indirect
 )
 
-replace github.com/go-acme/lego/v4 => github.com/tgeoghegan/lego/v4 v4.0.0-20250602175132-bc30aa291890
+replace github.com/go-acme/lego/v4 => github.com/tgeoghegan/lego-oidf/v4 v4.0.0-20250602175132-bc30aa291890
 
-replace github.com/letsencrypt/pebble/v2 => github.com/tgeoghegan/pebble/v2 v2.0.0-20250602175146-ffe18c533a81
+replace github.com/letsencrypt/pebble/v2 => github.com/tgeoghegan/pebble-oidf/v2 v2.0.0-20250602175146-ffe18c533a81

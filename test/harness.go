@@ -29,8 +29,8 @@ import (
 	"github.com/zachmann/go-oidfed/pkg/fedentities"
 	"github.com/zachmann/go-oidfed/pkg/fedentities/storage"
 
-	"github.com/tgeoghegan/oidf-box/oidfclient"
-	oidf01 "github.com/tgeoghegan/oidf-box/openidfederation01"
+	"github.com/abetterinternet/oidf-box/oidfclient"
+	oidf01 "github.com/abetterinternet/oidf-box/openidfederation01"
 )
 
 // DemoUser implements registration.User

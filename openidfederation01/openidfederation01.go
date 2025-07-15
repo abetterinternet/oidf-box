@@ -11,7 +11,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/tgeoghegan/oidf-box/errors"
+	"github.com/abetterinternet/oidf-box/errors"
 )
 
 const (

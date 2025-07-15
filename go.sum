@@ -111,10 +111,12 @@ github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/
 github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
-github.com/tgeoghegan/lego/v4 v4.0.0-20250602175132-bc30aa291890 h1:K+e2HXX0x4Q5GnfQipD74pgLbtAZ5BCfUrftbu7POSQ=
-github.com/tgeoghegan/lego/v4 v4.0.0-20250602175132-bc30aa291890/go.mod h1:vMhe7eBa4cH/DTDl1b4LaaFPuE35h78zT+WzuNrl5vQ=
-github.com/tgeoghegan/pebble/v2 v2.0.0-20250602175146-ffe18c533a81 h1:raYz0L/eIkEia9limUYuHd2ZAYTsJo2nCvCUDPnsaXQ=
-github.com/tgeoghegan/pebble/v2 v2.0.0-20250602175146-ffe18c533a81/go.mod h1:irCFE6T42MWeg20dqBcoUbsPAySQlKYnt+uTKFpJwXo=
+github.com/tgeoghegan/lego-oidf/v4 v4.0.0-20250602175132-bc30aa291890 h1:7cmm6pxQlVb9l+spJiiOxkawLGH95JEWX9IZvCEnI4g=
+github.com/tgeoghegan/lego-oidf/v4 v4.0.0-20250602175132-bc30aa291890/go.mod h1:vMhe7eBa4cH/DTDl1b4LaaFPuE35h78zT+WzuNrl5vQ=
+github.com/tgeoghegan/oidf-box v0.0.0-20250519230951-6b44a9142bd2 h1:71NMCNijoqb29+N5QEQ3CuRAur0thMJeO4T6ACDWL+8=
+github.com/tgeoghegan/oidf-box v0.0.0-20250519230951-6b44a9142bd2/go.mod h1:f5TYEZr0ryILRHhLJ7gMPlzQ7v3LFNkhsXpK6/8A2kM=
+github.com/tgeoghegan/pebble-oidf/v2 v2.0.0-20250602175146-ffe18c533a81 h1:coKhBLbxc1jYqMmu1pHtFiMx2UmyehkjkSH1zGXgqVk=
+github.com/tgeoghegan/pebble-oidf/v2 v2.0.0-20250602175146-ffe18c533a81/go.mod h1:irCFE6T42MWeg20dqBcoUbsPAySQlKYnt+uTKFpJwXo=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasthttp v1.51.0 h1:8b30A5JlZ6C7AS81RsWjYMQmrZG6feChmgAolCl1SqA=

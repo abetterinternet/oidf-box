@@ -16,14 +16,12 @@ see what's going on. To exercise new issuance scenarios, add new tests to
 
 ## Forked dependencies
 
-To make all this work, I had to teach various open source components about the new OpenID Federation
-entity types and/or the new ACME challenge type.
+To make all this work, we had to teach various open source components about the new OpenID
+Federation entity types and/or the new ACME challenge type.
 
-The OIDF entities are implemented by [my fork of go-oidfed][timg-go-oidfed] ([upstream][go-oidfed]).
+The ACME CA is implemented by [our fork of Pebble][pebble-oidf] ([upstream][pebble]).
 
-The ACME CA is implemented by [my fork of Pebble][timg-pebble] ([upstream][pebble]).
-
-The ACME clients are implemented by [my fork of Lego][timg-lego] ([upstream][lego]).
+The ACME clients are implemented by [our fork of Lego][lego-oidf] ([upstream][lego]).
 
 Besides implementing the extra features needed for the new challenge type, the forks' `go.mod` and
 `go.sum` files are modified to point to each other. If you want to hack on this, you'll likely want
@@ -34,10 +32,9 @@ This is tested on Linux and will probably work all right on anything Unix-y enou
 [oidf]: https://openid.net/specs/openid-federation-1_0-41.html
 [oidf-41]: https://openid.net/specs/openid-federation-1_0-41.html
 [acmeopenid]: https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html
-[timg-go-oidfed]: https://github.com/tgeoghegan/go-oidfed
 [go-oidfed]: https://github.com/zachmann/go-oidfed
-[timg-pebble]: https://github.com/tgeoghegan/pebble
+[pebble-oidf]: https://github.com/abetterinternet/pebble
 [pebble]: https://github.com/letsencrypt/pebble
-[timg-lego]: https://github.com/tgeoghegan/lego
+[lego-oidf]: https://github.com/abetterinternet/lego
 [lego]: https://github.com/go-acme/lego
 [acmeopenid-0573f04]: https://github.com/peppelinux/draft-demarco-acme-openid-federation/commit/0573f04f6a1fe50b01358abc3288dfff32a33c6c
