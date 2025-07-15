@@ -73,6 +73,6 @@ require (
 	tideland.dev/go/slices v0.2.0 // indirect
 )
 
-replace github.com/go-acme/lego/v4 => github.com/tgeoghegan/lego-oidf/v4 v4.0.0-20250602175132-bc30aa291890
+replace github.com/go-acme/lego/v4 v4.23.1 => github.com/abetterinternet/lego-oidf/v4 v4.0.0-20250602175132-bc30aa291890
 
-replace github.com/letsencrypt/pebble/v2 => github.com/tgeoghegan/pebble-oidf/v2 v2.0.0-20250602175146-ffe18c533a81
+replace github.com/letsencrypt/pebble/v2 v2.7.0 => github.com/abetterinternet/pebble-oidf/v2 v2.0.0-20250715203814-cb1a8c761056
