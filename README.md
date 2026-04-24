@@ -31,10 +31,9 @@ This is tested on Linux and will probably work all right on anything Unix-y enou
 
 [oidf]: https://openid.net/specs/openid-federation-1_0-41.html
 [oidf-41]: https://openid.net/specs/openid-federation-1_0-41.html
-[acmeopenid]: https://peppelinux.github.io/draft-demarco-acme-openid-federation/draft-demarco-acme-openid-federation.html
+[acmeopenid]: https://datatracker.ietf.org/doc/draft-ietf-acme-openid-federation/
 [go-oidfed]: https://github.com/zachmann/go-oidfed
-[pebble-oidf]: https://github.com/abetterinternet/pebble
+[pebble-oidf]: https://github.com/abetterinternet/pebble-oidf
 [pebble]: https://github.com/letsencrypt/pebble
-[lego-oidf]: https://github.com/abetterinternet/lego
+[lego-oidf]: https://github.com/abetterinternet/lego-oidf
 [lego]: https://github.com/go-acme/lego
-[acmeopenid-0573f04]: https://github.com/peppelinux/draft-demarco-acme-openid-federation/commit/0573f04f6a1fe50b01358abc3288dfff32a33c6c
